@@ -62,10 +62,22 @@ else
 fi
 
 # Step 2: nginx conf rendering. Skip if file exists and references our domain
-# AND --force was NOT passed.
+# AND --force was NOT passed AND it's not from a stale (pre-fix) template.
+needs_render=1
 if [[ "$force" -eq 0 ]] && sudo test -f "$target" && sudo grep -q "server_name ${domain};" "$target"; then
-  ok "$target already configured for $domain — skipping render (use --force to re-render)"
-else
+  # Detect the broken pre-fix render: it included proxy-common.conf AND
+  # also wrote proxy_read_timeout in the same location. nginx -t errors on
+  # that combo. If both markers are present, force re-render once.
+  if sudo grep -q 'include /etc/nginx/snippets/proxy-common.conf' "$target" \
+     && sudo grep -q '^[[:space:]]*proxy_read_timeout' "$target"; then
+    warn "$target was rendered from an old template (duplicate proxy_read_timeout) — re-rendering"
+  else
+    ok "$target already configured for $domain — skipping render (use --force to re-render)"
+    needs_render=0
+  fi
+fi
+
+if [[ "$needs_render" -eq 1 ]]; then
   log "rendering $target"
   sudo bash -c "sed 's|\${PORTAINER_DOMAIN}|$domain|g' '$template' > '$target'"
   sudo chmod 0644 "$target"

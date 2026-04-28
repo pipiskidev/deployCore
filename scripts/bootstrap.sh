@@ -179,8 +179,19 @@ else
   warn "  add a manual cron entry:  0 3 * * * /usr/bin/certbot renew --quiet"
 fi
 
+# Helper: returns 0 if a container with the given name is currently running.
+container_running() {
+  [[ "$(docker ps --filter "name=^${1}$" --filter "status=running" --format '{{.Names}}' 2>/dev/null)" == "$1" ]]
+}
+
 # Step 6: Portainer.
-if [[ "$with_portainer" -eq 0 && "$no_prompt" -eq 0 ]]; then
+# Skip the question entirely if it's already running. up-portainer.sh is
+# itself idempotent, but asking the operator about something that's already
+# done is noise.
+if container_running core-portainer; then
+  ok "Portainer already running (core-portainer container) — skipping"
+  with_portainer=0
+elif [[ "$with_portainer" -eq 0 && "$no_prompt" -eq 0 ]]; then
   ask_yn "Install Portainer (publicly exposed admin UI on a dedicated subdomain)?" N \
     && with_portainer=1
 fi
@@ -193,7 +204,10 @@ if [[ "$with_portainer" -eq 1 ]]; then
 fi
 
 # Step 7: mail.
-if [[ "$with_mail" -eq 0 && "$no_prompt" -eq 0 ]]; then
+if container_running mailserver; then
+  ok "mailserver already running — skipping"
+  with_mail=0
+elif [[ "$with_mail" -eq 0 && "$no_prompt" -eq 0 ]]; then
   ask_yn "Install mail server (shared/mail/, opt-in SMTP)?" N && with_mail=1
 fi
 if [[ "$with_mail" -eq 1 ]]; then
@@ -211,6 +225,23 @@ fi
 # only the requested subset up. We don't symlink nginx or issue certs here —
 # that's the operator's call, since they may run example backend-only without
 # a domain. The README documents the wire-up commands.
+#
+# For each requested service, skip its profile if its container is already
+# running. Then `docker compose up` is only invoked if at least one profile
+# remains — avoiding a pointless compose call when everything is already up.
+container_running example-backend && {
+  [[ "$ex_backend"  -eq 1 ]] && ok "example-backend already running — skipping"
+  ex_backend=0
+}
+container_running example-web && {
+  [[ "$ex_frontend" -eq 1 ]] && ok "example-web already running — skipping"
+  ex_frontend=0
+}
+container_running example-mongo && {
+  [[ "$ex_mongo"    -eq 1 ]] && ok "example-mongo already running — skipping"
+  ex_mongo=0
+}
+
 example_profiles=()
 [[ "$ex_backend"  -eq 1 ]] && example_profiles+=(--profile backend)
 [[ "$ex_frontend" -eq 1 ]] && example_profiles+=(--profile web)

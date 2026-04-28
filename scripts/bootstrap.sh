@@ -32,8 +32,15 @@
 
 set -euo pipefail
 
+# Self-heal executable bits. If this repo was cloned with file modes lost
+# (committed from Windows without +x, or a tarball that dropped them),
+# nothing in scripts/ can run. Restore +x here before anything else does.
+_self_dir="$(dirname "$(readlink -f "$0")")"
+_repo_root="$(cd "$_self_dir/.." && pwd)"
+chmod +x "$_self_dir"/*.sh "$_self_dir"/lib/*.sh 2>/dev/null || true
+
 # shellcheck source=lib/common.sh
-source "$(dirname "$(readlink -f "$0")")/lib/common.sh"
+source "$_self_dir/lib/common.sh"
 
 with_portainer=0
 with_mail=0

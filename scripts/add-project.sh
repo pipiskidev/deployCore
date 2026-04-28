@@ -10,12 +10,20 @@
 #                   Container still binds to 127.0.0.1:<HOST_PORT> for internal
 #                   access (other containers, SSH tunnels, host-side scripts).
 #                   <domain> argument is omitted when --no-domain is used.
+#   --image <ref>   Docker image for the app container. Skips the editor step.
+#                   Example: --image ghcr.io/myorg/myapp:latest
+#   --app-port <n>  Port the app listens on inside the container.
+#                   Skips the editor step. Example: --app-port 8080
 #   --profile <p>   Compose profile to bring up (default: full).
 #                   Repeatable: --profile backend --profile worker.
 #   --skip-cert     Don't issue a Let's Encrypt cert (DNS not ready).
 #                   Implies you'll wire it up later with issue-cert.sh.
 #   --skip-up       Don't bring up containers — only scaffold + cert + nginx wiring.
 #   --port <n>      Use this HOST_PORT instead of auto-assigning.
+#
+# Fully-scripted backend-only example:
+#   ./scripts/add-project.sh worker --no-domain \
+#       --image openjdk:17-jdk-slim --app-port 8080
 #
 # Steps (full mode, with domain):
 #   1. Validate name and domain.
@@ -42,6 +50,8 @@ skip_cert=0
 skip_up=0
 no_domain=0
 fixed_port=""
+arg_image=""
+arg_app_port=""
 profiles=()
 positional=()
 i=1
@@ -56,6 +66,16 @@ while [[ $i -le $# ]]; do
       fixed_port="${!i}"
       ;;
     --port=*) fixed_port="${arg#*=}" ;;
+    --image)
+      i=$((i+1)); [[ $i -le $# ]] || die "--image requires a value"
+      arg_image="${!i}"
+      ;;
+    --image=*) arg_image="${arg#*=}" ;;
+    --app-port)
+      i=$((i+1)); [[ $i -le $# ]] || die "--app-port requires a value"
+      arg_app_port="${!i}"
+      ;;
+    --app-port=*) arg_app_port="${arg#*=}" ;;
     --profile)
       i=$((i+1)); [[ $i -le $# ]] || die "--profile requires a value"
       profiles+=("--profile" "${!i}")
@@ -130,18 +150,65 @@ fi
 sed -i.bak "s|^HOST_PORT=.*|HOST_PORT=$host_port|" "$project_dir/.env"
 rm -f "$project_dir/.env.bak"
 
-editor="${EDITOR:-${VISUAL:-}}"
-if [[ -n "$editor" ]]; then
-  log "opening $project_dir/.env in $editor — fill in IMAGE, APP_PORT, and project secrets"
-  "$editor" "$project_dir/.env"
-else
-  warn "EDITOR not set — edit $project_dir/.env manually now, then press ENTER to continue"
-  read -r
+# Pre-fill IMAGE/APP_PORT from CLI flags if provided.
+if [[ -n "$arg_image" ]]; then
+  if grep -q '^IMAGE=' "$project_dir/.env"; then
+    sed -i.bak "s|^IMAGE=.*|IMAGE=$arg_image|" "$project_dir/.env" && rm -f "$project_dir/.env.bak"
+  else
+    echo "IMAGE=$arg_image" >> "$project_dir/.env"
+  fi
+fi
+if [[ -n "$arg_app_port" ]]; then
+  if grep -q '^APP_PORT=' "$project_dir/.env"; then
+    sed -i.bak "s|^APP_PORT=.*|APP_PORT=$arg_app_port|" "$project_dir/.env" && rm -f "$project_dir/.env.bak"
+  else
+    echo "APP_PORT=$arg_app_port" >> "$project_dir/.env"
+  fi
+fi
+
+# Determine if .env still has unfilled required vars and whether we need
+# to interact with the operator. Sourcing here lets later steps see the
+# values and we re-source again after any edit.
+load_project_env() {
+  IMAGE=""; APP_PORT=""
+  # shellcheck disable=SC1090
+  source "$project_dir/.env"
+}
+load_project_env
+
+# Editor flow: open in $EDITOR if set; otherwise inline-prompt for the
+# minimum (IMAGE + APP_PORT) so the script never waits silently.
+if [[ -z "${IMAGE:-}" || -z "${APP_PORT:-}" ]]; then
+  editor="${EDITOR:-${VISUAL:-}}"
+  if [[ -n "$editor" ]]; then
+    log "opening $project_dir/.env in $editor — fill in IMAGE, APP_PORT, and project secrets"
+    "$editor" "$project_dir/.env"
+  elif command -v vim >/dev/null 2>&1 || command -v nano >/dev/null 2>&1 || command -v vi >/dev/null 2>&1; then
+    log "EDITOR not set — falling back to inline prompts (use --image / --app-port to skip these)"
+    if [[ -z "${IMAGE:-}" ]]; then
+      printf "IMAGE (e.g. node:20-alpine, ghcr.io/foo/bar:latest): "
+      read -r reply
+      [[ -n "$reply" ]] || die "IMAGE is required"
+      sed -i.bak "s|^IMAGE=.*|IMAGE=$reply|" "$project_dir/.env"
+      grep -q '^IMAGE=' "$project_dir/.env" || echo "IMAGE=$reply" >> "$project_dir/.env"
+      rm -f "$project_dir/.env.bak"
+    fi
+    if [[ -z "${APP_PORT:-}" ]]; then
+      printf "APP_PORT (port the app listens on inside the container, e.g. 3000): "
+      read -r reply
+      [[ -n "$reply" ]] || die "APP_PORT is required"
+      sed -i.bak "s|^APP_PORT=.*|APP_PORT=$reply|" "$project_dir/.env"
+      grep -q '^APP_PORT=' "$project_dir/.env" || echo "APP_PORT=$reply" >> "$project_dir/.env"
+      rm -f "$project_dir/.env.bak"
+    fi
+    warn "any project-specific secrets still need a manual edit of $project_dir/.env"
+  else
+    die "no editor available and --image/--app-port not provided. Pass --image and --app-port, or set EDITOR=vi (or similar)."
+  fi
+  load_project_env
 fi
 
 # Verify required vars filled in.
-# shellcheck disable=SC1090
-source "$project_dir/.env"
 [[ -n "${IMAGE:-}" ]]    || die "IMAGE not set in $project_dir/.env"
 [[ -n "${APP_PORT:-}" ]] || die "APP_PORT not set in $project_dir/.env"
 

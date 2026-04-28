@@ -96,7 +96,7 @@ if [[ "$no_ui" -eq 0 && "$force_ui" -eq 0 && -f "$REPO_ROOT/.env" ]]; then
   existing_email=$(grep -E '^LETSENCRYPT_EMAIL=' "$REPO_ROOT/.env" 2>/dev/null | cut -d= -f2-)
   if [[ -n "$existing_email" && "$existing_email" != "admin@example.com" ]]; then
     ok ".env already configured (LETSENCRYPT_EMAIL=$existing_email) — skipping install UI"
-    log "use --force-ui to re-open the browser form"
+    warn "to re-open the browser form, rerun:  ./scripts/bootstrap.sh --force-ui"
     no_ui=1
   fi
 fi

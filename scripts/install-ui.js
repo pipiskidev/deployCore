@@ -153,48 +153,61 @@ const HTML_FORM = `<!doctype html>
         </div>
       </div>
 
+      <!-- example backend (Spring Boot) — top-level, fully independent -->
       <div class="card">
         <label class="row" style="margin:0">
-          <input type="checkbox" name="install_example" id="install_example" value="1" {{EXAMPLE_CHECKED}}>
-          <strong>Configure the <code>example</code> project</strong> (Spring Boot + Next.js + MongoDB)
+          <input type="checkbox" name="install_backend" id="install_backend" value="1" {{EX_B_CHECKED}}>
+          <strong>Install example backend</strong> (Spring Boot, container <code>example-backend</code>, host port 8066)
         </label>
-        <p class="muted" style="margin:6px 0 0 24px">
-          Pick which services to set up. Tick none to skip the project entirely. Domain is required only if you tick frontend or backend (i.e. anything fronted by nginx).
-        </p>
-        <div class="group-body {{EXAMPLE_OPEN}}" id="example_body">
-          <label class="row" style="margin-top:0">
-            <input type="checkbox" name="example_backend" value="1" {{EX_B_CHECKED}}>
-            Backend (Spring Boot, public via nginx)
-          </label>
-          <label class="row">
-            <input type="checkbox" name="example_web" value="1" {{EX_W_CHECKED}}>
-            Frontend (Next.js, public via nginx)
-          </label>
-          <label class="row">
-            <input type="checkbox" name="example_mongo" value="1" {{EX_M_CHECKED}}>
-            Database (MongoDB, internal only)
-          </label>
-
-          <label for="EXAMPLE_DOMAIN" style="margin-top:16px">example domain <span class="muted">(only if backend OR frontend selected)</span></label>
-          <input type="text" id="EXAMPLE_DOMAIN" name="EXAMPLE_DOMAIN" placeholder="example.example.com" value="{{EXAMPLE_DOMAIN}}">
-          <div class="help">Leave empty for a backend-only deployment without a public domain — the backend stays reachable on 127.0.0.1:8066 internally.</div>
-
-          <label for="MONGO_PASSWORD">MongoDB root password <span class="muted">(only if backend OR database selected)</span></label>
-          <div class="gen-row">
-            <input type="text" id="MONGO_PASSWORD" name="MONGO_PASSWORD" value="{{MONGO_PASSWORD}}" placeholder="generate or paste">
-            <button type="button" class="secondary" onclick="genPwd()">Generate</button>
-          </div>
-          <div class="help">A 32-byte URL-safe random secret is generated client-side when you click Generate.</div>
-
-          <label for="BACKEND_JAR_DIR">Backend jar directory (host path) <span class="muted">— if backend</span></label>
+        <div class="group-body {{EX_B_OPEN}}" id="backend_body">
+          <label for="BACKEND_JAR_DIR">Backend jar directory (host path)</label>
           <input type="text" id="BACKEND_JAR_DIR" name="BACKEND_JAR_DIR" value="{{BACKEND_JAR_DIR}}">
-
-          <label for="FRONTEND_DIR">Frontend sources directory (host path) <span class="muted">— if frontend</span></label>
-          <input type="text" id="FRONTEND_DIR" name="FRONTEND_DIR" value="{{FRONTEND_DIR}}">
+          <div class="help">Mounted as <code>/app:ro</code>; container runs <code>java -jar /app/Backend-1.0-SNAPSHOT.jar</code>.</div>
 
           <label for="STATIC_DIR">Static files directory (host path)</label>
           <input type="text" id="STATIC_DIR" name="STATIC_DIR" value="{{STATIC_DIR}}">
         </div>
+      </div>
+
+      <!-- example frontend (Next.js) — top-level, fully independent -->
+      <div class="card">
+        <label class="row" style="margin:0">
+          <input type="checkbox" name="install_frontend" id="install_frontend" value="1" {{EX_W_CHECKED}}>
+          <strong>Install example frontend</strong> (Next.js, container <code>example-web</code>, host port 3005)
+        </label>
+        <div class="group-body {{EX_W_OPEN}}" id="frontend_body">
+          <label for="FRONTEND_DIR">Frontend sources directory (host path)</label>
+          <input type="text" id="FRONTEND_DIR" name="FRONTEND_DIR" value="{{FRONTEND_DIR}}">
+          <div class="help">Mounted as <code>/app</code>; container runs <code>npm ci && npm run build && npm run start</code>.</div>
+        </div>
+      </div>
+
+      <!-- example mongo — top-level, fully independent -->
+      <div class="card">
+        <label class="row" style="margin:0">
+          <input type="checkbox" name="install_mongo" id="install_mongo" value="1" {{EX_M_CHECKED}}>
+          <strong>Install MongoDB</strong> (container <code>example-mongo</code>, internal-only — never published to host)
+        </label>
+        <div class="group-body {{EX_M_OPEN}}" id="mongo_body">
+          <p class="muted" style="margin:0">Credentials and password go in the "Shared example settings" card below — they're shared with the backend.</p>
+        </div>
+      </div>
+
+      <!-- Shared settings: shown when ANY of backend / frontend / mongo selected -->
+      <div class="card" id="shared_card" style="display:{{SHARED_DISPLAY}}">
+        <h3 style="margin:0 0 8px">Shared example project settings</h3>
+        <p class="muted" style="margin:0 0 8px">These apply across the example services you've selected above.</p>
+
+        <label for="EXAMPLE_DOMAIN">Public domain <span class="muted">(required if backend OR frontend ticked)</span></label>
+        <input type="text" id="EXAMPLE_DOMAIN" name="EXAMPLE_DOMAIN" placeholder="example.example.com" value="{{EXAMPLE_DOMAIN}}">
+        <div class="help">Leave empty if you only ticked MongoDB, or if backend is internal-only and you'll skip nginx routing manually.</div>
+
+        <label for="MONGO_PASSWORD">MongoDB root password <span class="muted">(required if backend OR mongo ticked)</span></label>
+        <div class="gen-row">
+          <input type="text" id="MONGO_PASSWORD" name="MONGO_PASSWORD" value="{{MONGO_PASSWORD}}" placeholder="generate or paste">
+          <button type="button" class="secondary" onclick="genPwd()">Generate</button>
+        </div>
+        <div class="help">A 32-byte URL-safe random secret is generated client-side when you click Generate.</div>
       </div>
 
       <div class="actions">
@@ -219,7 +232,22 @@ const HTML_FORM = `<!doctype html>
   }
   toggle('install_portainer', 'portainer_body');
   toggle('install_mail', 'mail_body');
-  toggle('install_example', 'example_body');
+  toggle('install_backend', 'backend_body');
+  toggle('install_frontend', 'frontend_body');
+  toggle('install_mongo', 'mongo_body');
+
+  // Shared settings card visible only when at least one example component is ticked.
+  function syncShared() {
+    const anyExample =
+      document.getElementById('install_backend').checked ||
+      document.getElementById('install_frontend').checked ||
+      document.getElementById('install_mongo').checked;
+    document.getElementById('shared_card').style.display = anyExample ? '' : 'none';
+  }
+  ['install_backend', 'install_frontend', 'install_mongo'].forEach(id =>
+    document.getElementById(id).addEventListener('change', syncShared)
+  );
+  syncShared();
 
   function genPwd() {
     const buf = new Uint8Array(32);
@@ -281,12 +309,10 @@ function loadDefaults(repoRoot) {
     BACKEND_JAR_DIR: '/home/exampleProject/backend/target',
     FRONTEND_DIR:    '/home/exampleProject/frontend/sources',
     STATIC_DIR:      '/home/static',
-    // Service-level toggles for the example project. Default backend on, web
-    // off so that backend-only is the easy path; user opts in to the rest.
-    install_example:  '0',
-    example_backend:  '1',
-    example_web:      '0',
-    example_mongo:    '1',
+    // Top-level toggles for the example project services. Each is independent.
+    install_backend:  '0',
+    install_frontend: '0',
+    install_mongo:    '0',
   };
   const envPath = path.join(repoRoot, '.env');
   if (fs.existsSync(envPath)) {
@@ -326,11 +352,15 @@ function renderForm(state, error = '', form = {}) {
     MAIL_HOSTNAME:       v('MAIL_HOSTNAME'),
     LETSENCRYPT_DOMAIN:  v('LETSENCRYPT_DOMAIN'),
     POSTMASTER_ADDRESS:  v('POSTMASTER_ADDRESS'),
-    EXAMPLE_CHECKED:     checked('install_example'),
-    EXAMPLE_OPEN:        open_('install_example'),
-    EX_B_CHECKED:        checked('example_backend'),
-    EX_W_CHECKED:        checked('example_web'),
-    EX_M_CHECKED:        checked('example_mongo'),
+    EX_B_CHECKED:        checked('install_backend'),
+    EX_B_OPEN:           open_('install_backend'),
+    EX_W_CHECKED:        checked('install_frontend'),
+    EX_W_OPEN:           open_('install_frontend'),
+    EX_M_CHECKED:        checked('install_mongo'),
+    EX_M_OPEN:           open_('install_mongo'),
+    SHARED_DISPLAY:      (
+      checked('install_backend') || checked('install_frontend') || checked('install_mongo')
+    ) ? '' : 'none',
     EXAMPLE_DOMAIN:      v('EXAMPLE_DOMAIN'),
     MONGO_PASSWORD:      v('MONGO_PASSWORD'),
     BACKEND_JAR_DIR:     v('BACKEND_JAR_DIR'),
@@ -362,12 +392,11 @@ function validateAndWrite(state, form) {
 
   const installPortainer = form.install_portainer === '1';
   const installMail      = form.install_mail      === '1';
-  const installExample   = form.install_example   === '1';
-  // Service-level toggles for the example project — only meaningful when
-  // installExample is true.
-  const exBackend = installExample && form.example_backend === '1';
-  const exWeb     = installExample && form.example_web     === '1';
-  const exMongo   = installExample && form.example_mongo   === '1';
+  // Independent top-level toggles for each example service.
+  const exBackend  = form.install_backend  === '1';
+  const exFrontend = form.install_frontend === '1';
+  const exMongo    = form.install_mongo    === '1';
+  const anyExample = exBackend || exFrontend || exMongo;
 
   if (installPortainer) {
     const d = trim('PORTAINER_DOMAIN');
@@ -378,18 +407,14 @@ function validateAndWrite(state, form) {
       if (!trim(k)) errors.push(`${k} required when mail is enabled`);
     }
   }
-  if (installExample) {
-    // At least one service must be ticked (otherwise tick "Configure example" off entirely).
-    if (!exBackend && !exWeb && !exMongo) {
-      errors.push('Select at least one of backend/frontend/database — or untick "Configure the example project".');
-    }
+  if (anyExample) {
     // Domain only required if anything will be fronted by nginx.
-    if ((exBackend || exWeb) && !trim('EXAMPLE_DOMAIN')) {
-      errors.push('EXAMPLE_DOMAIN required when backend OR frontend is selected (because nginx fronts both). Untick those for backend-only / no-domain.');
+    if ((exBackend || exFrontend) && !trim('EXAMPLE_DOMAIN')) {
+      errors.push('EXAMPLE_DOMAIN required because backend or frontend is selected (nginx fronts both). Leave empty only if you also untick backend AND frontend (mongo-only deploy).');
     }
-    // Mongo password only required if backend or mongo present.
+    // Mongo password required if backend talks to mongo or mongo runs locally.
     if ((exBackend || exMongo) && !trim('MONGO_PASSWORD')) {
-      errors.push('MONGO_PASSWORD required when backend or database is selected (use Generate button).');
+      errors.push('MONGO_PASSWORD required because backend or database is selected (click Generate).');
     }
   }
 
@@ -408,7 +433,7 @@ function validateAndWrite(state, form) {
   writeFileSecure(path.join(state.repoRoot, '.env'), envBody);
   const summary = ['.env'];
 
-  if (installExample) {
+  if (anyExample) {
     const exampleEnv = [
       `EXAMPLE_DOMAIN=${trim('EXAMPLE_DOMAIN')}`,
       'MONGO_USER=root',
@@ -444,10 +469,9 @@ function validateAndWrite(state, form) {
   const sidecar = JSON.stringify({
     install_portainer: installPortainer,
     install_mail:      installMail,
-    install_example:   installExample,
-    example_backend:   exBackend,
-    example_web:       exWeb,
-    example_mongo:     exMongo,
+    install_backend:   exBackend,
+    install_frontend:  exFrontend,
+    install_mongo:     exMongo,
   }) + '\n';
   writeFileSecure(path.join(state.repoRoot, '.install-ui-result.json'), sidecar);
   summary.push('.install-ui-result.json');

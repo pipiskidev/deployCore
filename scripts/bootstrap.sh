@@ -120,10 +120,16 @@ if [[ "$no_ui" -eq 0 && "$no_prompt" -eq 0 ]]; then
 
   # The UI may have flagged optional components in the sidecar.
   if [[ -f "$sidecar" ]]; then
-    if grep -q '"install_portainer":true'  "$sidecar"; then with_portainer=1; fi
-    if grep -q '"install_mail":true'       "$sidecar"; then with_mail=1; fi
+    if grep -q '"install_portainer":true' "$sidecar"; then with_portainer=1; fi
+    if grep -q '"install_mail":true'      "$sidecar"; then with_mail=1; fi
+    if grep -q '"install_backend":true'   "$sidecar"; then ex_backend=1;  else ex_backend=0;  fi
+    if grep -q '"install_frontend":true'  "$sidecar"; then ex_frontend=1; else ex_frontend=0; fi
+    if grep -q '"install_mongo":true'     "$sidecar"; then ex_mongo=1;    else ex_mongo=0;    fi
   fi
 fi
+ex_backend="${ex_backend:-0}"
+ex_frontend="${ex_frontend:-0}"
+ex_mongo="${ex_mongo:-0}"
 
 # Step 3: host nginx + certbot.
 require_root_or_sudo
@@ -188,6 +194,34 @@ if [[ "$with_mail" -eq 1 ]]; then
   fi
 fi
 
+# Step 8: example project services. Each example service was independently
+# selected in the install UI. Map the flags into compose profiles and bring
+# only the requested subset up. We don't symlink nginx or issue certs here —
+# that's the operator's call, since they may run example backend-only without
+# a domain. The README documents the wire-up commands.
+example_profiles=()
+[[ "$ex_backend"  -eq 1 ]] && example_profiles+=(--profile backend)
+[[ "$ex_frontend" -eq 1 ]] && example_profiles+=(--profile web)
+[[ "$ex_mongo"    -eq 1 ]] && example_profiles+=(--profile mongo)
+
+if [[ "${#example_profiles[@]}" -gt 0 ]]; then
+  if [[ ! -f "$REPO_ROOT/projects/example/.env" ]]; then
+    warn "example services selected but projects/example/.env missing — skipping example bring-up"
+    warn "  fill projects/example/.env, then run: docker compose -f projects/example/docker-compose.yml ${example_profiles[*]} up -d"
+  else
+    log "starting example services (${example_profiles[*]})"
+    docker compose -f "$REPO_ROOT/projects/example/docker-compose.yml" "${example_profiles[@]}" up -d
+    ok "example services up"
+    if [[ "$ex_backend" -eq 1 || "$ex_frontend" -eq 1 ]]; then
+      warn "Public access is NOT yet wired:"
+      warn "  1. Edit projects/example/nginx.conf — replace 'example.example.com' with your real domain"
+      warn "  2. ./scripts/issue-cert.sh <your-domain>"
+      warn "  3. sudo ln -sf \"\$(pwd)/projects/example/nginx.conf\" /etc/nginx/conf.d/example.conf"
+      warn "  4. ./scripts/reload-nginx.sh"
+    fi
+  fi
+fi
+
 cat <<EOF
 
 ${C_BOLD}Bootstrap complete.${C_RESET}
@@ -197,6 +231,9 @@ ${C_BOLD}Bootstrap complete.${C_RESET}
     certbot.timer    (twice-daily renewal check)
 $([[ $with_portainer -eq 1 ]] && echo "    portainer        (admin UI at https://${PORTAINER_DOMAIN:-})")
 $([[ $with_mail -eq 1 ]] && echo "    mailserver       (SMTP/IMAP)")
+$([[ $ex_backend  -eq 1 ]] && echo "    example-backend  (Spring Boot, 127.0.0.1:8066)")
+$([[ $ex_frontend -eq 1 ]] && echo "    example-web      (Next.js, 127.0.0.1:3005)")
+$([[ $ex_mongo    -eq 1 ]] && echo "    example-mongo    (internal, no host port)")
 
   Next:
     Add a project:        ./scripts/add-project.sh <name> <domain>

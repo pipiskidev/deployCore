@@ -22,6 +22,10 @@ target/
 # Local certbot scratch
 core/certbot/webroot/.well-known/
 
+# Sidecar written by scripts/install-ui.js — bootstrap.sh reads it once, then
+# it's superseded by .env. Don't commit.
+.install-ui-result.json
+
 # Project design docs and brainstorm notes — local only.
 # These may contain context-specific secrets, internal decisions, or PII.
 # If you want to commit a redacted spec, do so under a different path.

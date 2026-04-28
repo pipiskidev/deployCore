@@ -25,30 +25,40 @@ nginx (apt/dnf), certbot (apt/dnf), and enables `certbot.timer` for renewals.
 ```bash
 git clone https://github.com/pipiskidev/deployCore.git
 cd deployCore
+./scripts/bootstrap.sh
+```
 
-# 1. Fill in global infra vars
-cp .env.example .env
-$EDITOR .env                # set LETSENCRYPT_EMAIL at minimum
+That's it. After Docker is installed, bootstrap launches a temporary web UI
+on port **8888**. Open `http://<your-server-ip>:8888` in a browser, fill out
+the form (Let's Encrypt email, what to install — Portainer? mail? configure
+the `max` project? — domains, tokens), click **Save and continue**. The UI
+writes the right `.env` files, exits, and bootstrap continues with apt
+installs, syncing `/etc/nginx/`, and bringing up whichever optional services
+you ticked.
 
-# 2. Bootstrap (installs deps, syncs nginx/, asks about Portainer & mail)
-./scripts/bootstrap.sh                     # interactive
-./scripts/bootstrap.sh --yes               # only nginx + certbot, no extras
-./scripts/bootstrap.sh --with-portainer    # +portainer (asks for PORTAINER_DOMAIN)
-./scripts/bootstrap.sh --with-portainer --with-mail
+If you'd rather skip the browser UI:
 
-# 3. Add a project
+```bash
+./scripts/bootstrap.sh --no-ui --yes               # nginx + certbot only (.env must exist)
+./scripts/bootstrap.sh --no-ui --with-portainer    # +portainer
+./scripts/bootstrap.sh --no-ui --with-portainer --with-mail
+INSTALL_UI_PORT=9090 ./scripts/bootstrap.sh        # use a different port for the UI
+```
+
+After bootstrap, add a project:
+
+```bash
 ./scripts/add-project.sh myapp myapp.example.com
 ./scripts/add-project.sh myapi myapi.example.com --profile backend
 ./scripts/add-project.sh static static.example.com --profile web --skip-cert
 ```
 
-After step 2 you have a host-running nginx that 444s any unknown host and
-serves `/.well-known/acme-challenge/` for any domain. Step 3 issues a TLS
-certificate, creates a project folder from the template, symlinks its
-`nginx.conf` into `/etc/nginx/conf.d/`, and brings the project up.
-
 If `bootstrap.sh` had to install Docker, it adds your user to the `docker`
 group — log out and back in (or `newgrp docker`) before rerunning.
+
+The temporary UI runs in a `node:20-alpine` Docker container with the repo
+bind-mounted; nothing about Node is installed on the host. Files it writes
+are owned by your user (it runs `--user $(id -u):$(id -g)`).
 
 ## Layout
 
@@ -70,7 +80,8 @@ deployCore/
 ├── shared/
 │   └── mail/                           # opt-in SMTP (docker-mailserver)
 └── scripts/
-    ├── bootstrap.sh                    # one-time setup: deps + sync + optional services
+    ├── bootstrap.sh                    # one-time setup: launches install UI then provisions
+    ├── install-ui.js                   # browser configuration UI (Node, run via docker)
     ├── sync-nginx.sh                   # copy nginx/ → /etc/nginx/, validate, reload
     ├── add-project.sh                  # add-project.sh <name> <domain> [--profile p] [--port n]
     ├── up-project.sh                   # bring an existing project up/down with profiles

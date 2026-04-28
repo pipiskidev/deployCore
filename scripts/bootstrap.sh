@@ -5,21 +5,23 @@
 # Docker and bind to 127.0.0.1:<port>; nginx proxies to those loopback ports.
 # Optional Portainer and mail still run in Docker.
 #
-# Usage:
-#   ./scripts/bootstrap.sh                      # interactive
-#   ./scripts/bootstrap.sh --yes                # accept defaults (no extras)
-#   ./scripts/bootstrap.sh --with-portainer     # +portainer (asks for PORTAINER_DOMAIN if missing)
-#   ./scripts/bootstrap.sh --with-mail          # +mail
-#   ./scripts/bootstrap.sh --with-portainer --with-mail
+# Default flow (interactive without --no-ui):
+#   1. Install Docker if missing.
+#   2. Spin up a temporary web UI on port 8888 via `docker run node:20-alpine`.
+#   3. Operator opens http://<server-ip>:8888 in their browser, fills out a
+#      form (email, timezone, what to install, domains, tokens), clicks Save.
+#   4. UI writes .env, projects/max/.env, shared/mail/mailserver.env (only the
+#      ones selected) + .install-ui-result.json sidecar, then exits.
+#   5. Bootstrap reads the sidecar to know which optional services to bring up
+#      and continues with apt install of nginx + certbot, sync, enable timer,
+#      then up-portainer.sh / up-mail.sh as needed.
 #
-# Steps:
-#   1. Install Docker if missing (Debian/Ubuntu/RHEL family).
-#   2. Install host nginx + certbot via package manager.
-#   3. Ensure .env exists; if not, copy from .env.example and bail.
-#   4. Sync nginx/ → /etc/nginx/, validate, reload.
-#   5. Enable certbot.timer (auto-renew via systemd).
-#   6. Optionally bring up Portainer (./scripts/up-portainer.sh).
-#   7. Optionally bring up mail (./scripts/up-mail.sh).
+# Usage:
+#   ./scripts/bootstrap.sh                       # interactive web UI
+#   ./scripts/bootstrap.sh --no-ui               # interactive shell prompts (no browser)
+#   ./scripts/bootstrap.sh --no-ui --yes         # fully scripted, no extras (.env must exist)
+#   ./scripts/bootstrap.sh --no-ui --with-portainer --with-mail
+#   INSTALL_UI_PORT=9090 ./scripts/bootstrap.sh  # change the temp UI port
 
 set -euo pipefail
 
@@ -29,13 +31,15 @@ source "$(dirname "$(readlink -f "$0")")/lib/common.sh"
 with_portainer=0
 with_mail=0
 no_prompt=0
+no_ui=0
 for arg in "$@"; do
   case "$arg" in
     --with-portainer) with_portainer=1 ;;
     --with-mail)      with_mail=1 ;;
     --yes|--no-prompt) no_prompt=1 ;;
+    --no-ui)          no_ui=1 ;;
     --help|-h)
-      sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *) die "unknown flag: $arg (see --help)" ;;
@@ -54,15 +58,51 @@ ask_yn() {
   [[ "$reply" =~ ^[Yy]$ ]]
 }
 
-# Step 1: Docker (only needed for project containers + Portainer + mail).
+# Step 1: Docker (also needed for the install UI when --no-ui isn't set).
 ensure_docker_installed
 require_docker
 
-# Step 2: host nginx + certbot.
+# Step 2: install UI (browser form). Skipped with --no-ui or --yes.
+ui_port="${INSTALL_UI_PORT:-8888}"
+sidecar="$REPO_ROOT/.install-ui-result.json"
+rm -f "$sidecar"
+
+if [[ "$no_ui" -eq 0 && "$no_prompt" -eq 0 ]]; then
+  log "starting install UI on port $ui_port (Ctrl-C to cancel)"
+  log "open in your browser: http://$(hostname -I 2>/dev/null | awk '{print $1}' || echo '<server-ip>'):$ui_port"
+
+  # Run via docker so we don't have to install Node on the host.
+  # --user maps to host UID/GID so the .env files written are owned correctly.
+  set +e
+  docker run --rm \
+    -p "${ui_port}:${ui_port}" \
+    -v "$REPO_ROOT:/work" \
+    --workdir /work \
+    --user "$(id -u):$(id -g)" \
+    -e "INSTALL_UI_PORT=${ui_port}" \
+    node:20-alpine \
+    node scripts/install-ui.js /work
+  ui_rc=$?
+  set -e
+
+  case "$ui_rc" in
+    0)   ok "configuration saved by install UI" ;;
+    130) die "bootstrap cancelled by operator (UI)" ;;
+    *)   die "install UI exited unexpectedly (rc=$ui_rc)" ;;
+  esac
+
+  # The UI may have flagged optional components in the sidecar.
+  if [[ -f "$sidecar" ]]; then
+    if grep -q '"install_portainer":true'  "$sidecar"; then with_portainer=1; fi
+    if grep -q '"install_mail":true'       "$sidecar"; then with_mail=1; fi
+  fi
+fi
+
+# Step 3: host nginx + certbot.
 require_root_or_sudo
 ensure_nginx_certbot_installed
 
-# Step 3: .env.
+# Step 4: .env (the UI usually writes this; --no-ui paths still need a fallback).
 if [[ ! -f "$REPO_ROOT/.env" ]]; then
   if [[ -f "$REPO_ROOT/.env.example" ]]; then
     cp "$REPO_ROOT/.env.example" "$REPO_ROOT/.env"
@@ -75,7 +115,7 @@ fi
 
 load_env
 [[ "${LETSENCRYPT_EMAIL:-admin@example.com}" != "admin@example.com" ]] \
-  || die "LETSENCRYPT_EMAIL still at the example default. Edit .env first."
+  || die "LETSENCRYPT_EMAIL still at the example default. Edit .env first (or use the install UI)."
 
 # Step 4: sync nginx configs to /etc/nginx and reload.
 log "syncing repo nginx/ → /etc/nginx/"

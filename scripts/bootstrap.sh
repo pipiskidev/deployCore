@@ -21,7 +21,14 @@
 #   ./scripts/bootstrap.sh --no-ui               # interactive shell prompts (no browser)
 #   ./scripts/bootstrap.sh --no-ui --yes         # fully scripted, no extras (.env must exist)
 #   ./scripts/bootstrap.sh --no-ui --with-portainer --with-mail
+#   ./scripts/bootstrap.sh --force-ui            # re-open the UI even if .env exists
 #   INSTALL_UI_PORT=9090 ./scripts/bootstrap.sh  # change the temp UI port
+#
+# Re-running bootstrap.sh on an already-configured server is safe: every step
+# is idempotent and skips work it doesn't need to do (Docker/nginx/certbot
+# are not reinstalled, network 'web' isn't recreated, the install UI is
+# skipped if .env already exists). Use ./scripts/preflight.sh to see state
+# without modifying anything.
 
 set -euo pipefail
 
@@ -32,12 +39,14 @@ with_portainer=0
 with_mail=0
 no_prompt=0
 no_ui=0
+force_ui=0
 for arg in "$@"; do
   case "$arg" in
     --with-portainer) with_portainer=1 ;;
     --with-mail)      with_mail=1 ;;
     --yes|--no-prompt) no_prompt=1 ;;
     --no-ui)          no_ui=1 ;;
+    --force-ui)       force_ui=1 ;;
     --help|-h)
       sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
@@ -58,14 +67,32 @@ ask_yn() {
   [[ "$reply" =~ ^[Yy]$ ]]
 }
 
+# Show the user what's already installed/configured before doing anything.
+# Each subsequent step is a no-op if its component is already in the desired
+# state — so a re-run of bootstrap.sh on a fully-configured server is safe.
+print_inventory
+
 # Step 1: Docker (also needed for the install UI when --no-ui isn't set).
 ensure_docker_installed
 require_docker
 
-# Step 2: install UI (browser form). Skipped with --no-ui or --yes.
+# Step 2: install UI (browser form). Skipped with --no-ui, --yes, OR if .env
+# already exists with a non-default LETSENCRYPT_EMAIL (re-run scenario).
+# Override the auto-skip with --force-ui if you want to re-edit values.
 ui_port="${INSTALL_UI_PORT:-8888}"
 sidecar="$REPO_ROOT/.install-ui-result.json"
 rm -f "$sidecar"
+
+# Auto-skip on re-runs: if .env exists and has a real LETSENCRYPT_EMAIL, the
+# operator already configured this server. Don't open UI again unless asked.
+if [[ "$no_ui" -eq 0 && "$force_ui" -eq 0 && -f "$REPO_ROOT/.env" ]]; then
+  existing_email=$(grep -E '^LETSENCRYPT_EMAIL=' "$REPO_ROOT/.env" 2>/dev/null | cut -d= -f2-)
+  if [[ -n "$existing_email" && "$existing_email" != "admin@example.com" ]]; then
+    ok ".env already configured (LETSENCRYPT_EMAIL=$existing_email) — skipping install UI"
+    log "use --force-ui to re-open the browser form"
+    no_ui=1
+  fi
+fi
 
 if [[ "$no_ui" -eq 0 && "$no_prompt" -eq 0 ]]; then
   log "starting install UI on port $ui_port (Ctrl-C to cancel)"

@@ -81,16 +81,60 @@ deployCore/
 │   └── mail/                           # opt-in SMTP (docker-mailserver)
 └── scripts/
     ├── bootstrap.sh                    # one-time setup: launches install UI then provisions
+    ├── preflight.sh                    # READ-ONLY: print inventory of installed/configured state
     ├── install-ui.js                   # browser configuration UI (Node, run via docker)
     ├── sync-nginx.sh                   # copy nginx/ → /etc/nginx/, validate, reload
-    ├── add-project.sh                  # add-project.sh <name> <domain> [--profile p] [--port n]
+    ├── add-project.sh                  # add-project.sh <name> <domain> [--profile p] [--port n] [--no-domain]
     ├── up-project.sh                   # bring an existing project up/down with profiles
     ├── remove-project.sh               # take a project down + unlink nginx (data preserved)
     ├── up-portainer.sh                 # render portainer.conf, issue cert, start container
     ├── up-mail.sh                      # bring shared/mail/ up
     ├── issue-cert.sh                   # certbot certonly --webroot -d <domain>
     ├── reload-nginx.sh                 # nginx -t && systemctl reload nginx
-    └── lib/common.sh                   # bash helpers (validators, find_free_port, installers)
+    └── lib/common.sh                   # bash helpers (validators, find_free_port, status_*)
+```
+
+## Idempotency and preflight
+
+Everything in `scripts/` is safe to rerun. `bootstrap.sh` checks each
+component before installing or starting it:
+
+- **Docker**: skipped if `docker info` and `docker compose version` work.
+- **nginx + certbot**: skipped if `nginx`/`certbot` are already on PATH (no
+  `apt-get update`, no package install).
+- **`web` Docker network**: skipped if it already exists.
+- **install UI**: skipped automatically if `.env` already has a real
+  `LETSENCRYPT_EMAIL` (re-run scenario). Use `--force-ui` to re-open it.
+- **Portainer / mail**: containers checked first — skipped if already
+  running. Nginx config not re-rendered if already correct.
+- **TLS certs**: `certbot --keep-until-expiring` flag — never re-issues a
+  cert that's still valid.
+
+To inspect state without changing anything:
+
+```bash
+./scripts/preflight.sh           # human-readable
+./scripts/preflight.sh --json    # for CI / monitoring
+```
+
+Sample output:
+```
+deployCore preflight
+  os:        debian (Ubuntu 22.04.3 LTS)
+  docker:    installed (engine 24.0.7, compose v2.21.0)
+  nginx:     installed (1.18.0), active
+  certbot:   installed (1.21.0), timer active
+  portainer: running (Up 3 hours)
+  mail:      not deployed
+  projects:  example blog (2)
+  network:   web (exists)
+
+project:example  .env=yes  nginx=yes  running=yes (example-backend,example-mongo)
+project:blog     .env=yes  nginx=yes  running=yes (blog-app)
+
+certs (Let's Encrypt):
+  example.example.com   expires: Jul 28 11:42:00 2026 GMT
+  blog.example.com      expires: Jul 28 11:43:00 2026 GMT
 ```
 
 ## Modular install — what's optional, what's mandatory

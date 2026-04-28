@@ -71,11 +71,112 @@ detect_os_family() {
   esac
 }
 
+# ── Status helpers ───────────────────────────────────────────────────────
+# Each `status_*` function echoes a short human-readable string describing
+# the current state of one component. `is_*` functions return 0/1 as exit code
+# for use in conditionals. None of these functions install or modify anything.
+
+status_docker() {
+  if ! command -v docker >/dev/null 2>&1; then echo "not installed"; return; fi
+  local v; v=$(docker --version 2>/dev/null | sed -n 's/Docker version \([^,]*\).*/\1/p')
+  if ! docker info >/dev/null 2>&1; then echo "installed (${v:-unknown}) but daemon unreachable"; return; fi
+  if ! docker compose version >/dev/null 2>&1; then echo "installed (${v:-unknown}), compose plugin MISSING"; return; fi
+  local cv; cv=$(docker compose version --short 2>/dev/null)
+  echo "installed (engine ${v:-?}, compose ${cv:-?})"
+}
+is_docker_ready() {
+  command -v docker >/dev/null 2>&1 \
+    && docker info >/dev/null 2>&1 \
+    && docker compose version >/dev/null 2>&1
+}
+
+status_nginx() {
+  if ! command -v nginx >/dev/null 2>&1; then echo "not installed"; return; fi
+  local v; v=$(nginx -v 2>&1 | sed -n 's/^.*nginx\/\([^ ]*\).*/\1/p')
+  if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet nginx; then
+    echo "installed (${v:-?}), active"
+  else
+    echo "installed (${v:-?}), not active"
+  fi
+}
+is_nginx_active() {
+  command -v nginx >/dev/null 2>&1 \
+    && command -v systemctl >/dev/null 2>&1 \
+    && systemctl is-active --quiet nginx
+}
+
+status_certbot() {
+  if ! command -v certbot >/dev/null 2>&1; then echo "not installed"; return; fi
+  local v; v=$(certbot --version 2>&1 | sed -n 's/^certbot \([0-9.]*\).*/\1/p')
+  local timer="off"
+  if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet certbot.timer; then
+    timer="active"
+  fi
+  echo "installed (${v:-?}), timer ${timer}"
+}
+is_certbot_timer_active() {
+  command -v systemctl >/dev/null 2>&1 \
+    && systemctl is-active --quiet certbot.timer
+}
+
+status_portainer() {
+  if ! is_docker_ready; then echo "(needs docker)"; return; fi
+  if docker ps --filter "name=^core-portainer$" --format '{{.Status}}' 2>/dev/null | grep -q .; then
+    echo "running ($(docker ps --filter "name=^core-portainer$" --format '{{.Status}}'))"
+  elif docker ps -a --filter "name=^core-portainer$" --format '{{.Status}}' 2>/dev/null | grep -q .; then
+    echo "stopped ($(docker ps -a --filter "name=^core-portainer$" --format '{{.Status}}'))"
+  else
+    echo "not deployed"
+  fi
+}
+
+status_mailserver() {
+  if ! is_docker_ready; then echo "(needs docker)"; return; fi
+  if docker ps --filter "name=^mailserver$" --format '{{.Status}}' 2>/dev/null | grep -q .; then
+    echo "running"
+  elif docker ps -a --filter "name=^mailserver$" --format '{{.Status}}' 2>/dev/null | grep -q .; then
+    echo "stopped"
+  else
+    echo "not deployed"
+  fi
+}
+
+# Print a plain inventory of platform components. Used by preflight.sh and
+# by bootstrap.sh at the start of a run.
+print_inventory() {
+  printf "%s%s deployCore preflight%s\n" "$C_BOLD" "$C_BLUE" "$C_RESET"
+  printf "  os:        %s (%s)\n" "$(detect_os_family)" "$(. /etc/os-release 2>/dev/null && echo "${PRETTY_NAME:-unknown}")"
+  printf "  docker:    %s\n" "$(status_docker)"
+  printf "  nginx:     %s\n" "$(status_nginx)"
+  printf "  certbot:   %s\n" "$(status_certbot)"
+  printf "  portainer: %s\n" "$(status_portainer)"
+  printf "  mail:      %s\n" "$(status_mailserver)"
+  if [[ -d "$REPO_ROOT/projects" ]]; then
+    local count=0 names=()
+    for d in "$REPO_ROOT/projects"/*/; do
+      [[ -d "$d" && "$(basename "$d")" != "_template" ]] || continue
+      names+=("$(basename "$d")")
+      count=$((count+1))
+    done
+    if [[ $count -gt 0 ]]; then
+      printf "  projects:  %s (%d)\n" "${names[*]}" "$count"
+    else
+      printf "  projects:  (none)\n"
+    fi
+  fi
+  printf "  network:   web "
+  if is_docker_ready && docker network inspect web >/dev/null 2>&1; then
+    printf "(exists)\n"
+  else
+    printf "(missing)\n"
+  fi
+  printf "\n"
+}
+
 # Install Docker Engine + Compose plugin (idempotent).
 ensure_docker_installed() {
-  if command -v docker >/dev/null 2>&1 \
-     && docker info >/dev/null 2>&1 \
-     && docker compose version >/dev/null 2>&1; then
+  if is_docker_ready; then
+    ok "docker: $(status_docker) — skipping install"
     return 0
   fi
 
@@ -117,28 +218,41 @@ ensure_docker_installed() {
   return 1
 }
 
-# Install nginx + certbot via the host's package manager. Idempotent.
+# Install nginx + certbot via the host's package manager. Idempotent — skips
+# anything already present without touching the package manager at all.
 ensure_nginx_certbot_installed() {
   local os; os=$(detect_os_family)
+  local need_nginx=0 need_certbot=0
+  command -v nginx   >/dev/null 2>&1 || need_nginx=1
+  command -v certbot >/dev/null 2>&1 || need_certbot=1
+
+  if [[ $need_nginx -eq 0 && $need_certbot -eq 0 ]]; then
+    ok "nginx: $(status_nginx) — skipping install"
+    ok "certbot: $(status_certbot) — skipping install"
+    return 0
+  fi
 
   case "$os" in
     debian)
-      if ! command -v nginx >/dev/null 2>&1; then
-        log "installing nginx (apt)"
+      if [[ $need_nginx -eq 1 || $need_certbot -eq 1 ]]; then
+        log "running apt-get update"
         sudo apt-get update -qq
+      fi
+      if [[ $need_nginx -eq 1 ]]; then
+        log "installing nginx (apt)"
         sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nginx
       else
-        ok "nginx already installed ($(nginx -v 2>&1 | sed 's/^[^:]*: //'))"
+        ok "nginx: $(status_nginx) — skipping install"
       fi
-      if ! command -v certbot >/dev/null 2>&1; then
+      if [[ $need_certbot -eq 1 ]]; then
         log "installing certbot (apt)"
         sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq certbot
       else
-        ok "certbot already installed"
+        ok "certbot: $(status_certbot) — skipping install"
       fi
       ;;
     rhel)
-      if ! command -v nginx >/dev/null 2>&1; then
+      if [[ $need_nginx -eq 1 ]]; then
         log "installing nginx (dnf/yum)"
         if command -v dnf >/dev/null 2>&1; then
           sudo dnf install -y -q nginx
@@ -146,9 +260,9 @@ ensure_nginx_certbot_installed() {
           sudo yum install -y -q nginx
         fi
       else
-        ok "nginx already installed"
+        ok "nginx: $(status_nginx) — skipping install"
       fi
-      if ! command -v certbot >/dev/null 2>&1; then
+      if [[ $need_certbot -eq 1 ]]; then
         log "installing certbot (dnf/yum)"
         if command -v dnf >/dev/null 2>&1; then
           sudo dnf install -y -q certbot
@@ -156,7 +270,7 @@ ensure_nginx_certbot_installed() {
           sudo yum install -y -q certbot
         fi
       else
-        ok "certbot already installed"
+        ok "certbot: $(status_certbot) — skipping install"
       fi
       ;;
     *)

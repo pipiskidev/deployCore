@@ -21,9 +21,14 @@ if [[ ! -f "$mail_dir/mailserver.env" ]]; then
   exit 1
 fi
 
-log "starting mail server"
-docker compose -f "$mail_dir/docker-compose.yml" up -d
-ok "mail is up"
+running=$(docker ps --filter "name=^mailserver$" --format '{{.State}}' 2>/dev/null || true)
+if [[ "$running" == "running" ]]; then
+  ok "mailserver container already running — skipping compose up"
+else
+  log "starting mail server"
+  docker compose -f "$mail_dir/docker-compose.yml" up -d
+  ok "mail is up"
+fi
 
 cat <<EOF
 

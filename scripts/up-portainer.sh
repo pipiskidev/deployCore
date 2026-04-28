@@ -2,12 +2,13 @@
 # Bring up the optional Portainer admin UI.
 #
 # - Validates PORTAINER_DOMAIN in .env (asks if missing)
-# - Issues a Let's Encrypt cert
-# - Renders /etc/nginx/conf.d/portainer.conf from the template
-# - Starts the Portainer container (loopback bind 127.0.0.1:9000)
-# - Reloads nginx
+# - Issues a Let's Encrypt cert (skipped if cert already exists)
+# - Renders /etc/nginx/conf.d/portainer.conf from the template (skipped if
+#   already in place with the same domain)
+# - Starts the Portainer container (skipped if already running)
+# - Reloads nginx (skipped if no config changed)
 #
-# Idempotent: rerunning is safe.
+# Idempotent: rerunning on a fully-deployed Portainer is a no-op.
 
 set -euo pipefail
 
@@ -34,21 +35,47 @@ validate_domain "$domain"
 
 template="$REPO_ROOT/nginx/conf.d/portainer.conf.template"
 target="/etc/nginx/conf.d/portainer.conf"
+cert_dir="/etc/letsencrypt/live/$domain"
+needs_reload=0
 
 [[ -f "$template" ]] || die "missing template: $template"
 
-log "issuing Let's Encrypt cert for $domain"
-"$REPO_ROOT/scripts/issue-cert.sh" "$domain"
+# Step 1: cert.
+if sudo test -f "$cert_dir/fullchain.pem" && sudo test -f "$cert_dir/privkey.pem"; then
+  ok "cert exists at $cert_dir — skipping issue-cert.sh"
+else
+  log "issuing Let's Encrypt cert for $domain"
+  "$REPO_ROOT/scripts/issue-cert.sh" "$domain"
+fi
 
-log "rendering $target"
-sudo bash -c "sed 's|\${PORTAINER_DOMAIN}|$domain|g' '$template' > '$target'"
-sudo chmod 0644 "$target"
+# Step 2: nginx conf rendering. Skip if file exists and references our domain.
+if sudo test -f "$target" && sudo grep -q "server_name ${domain};" "$target"; then
+  ok "$target already configured for $domain — skipping render"
+else
+  log "rendering $target"
+  sudo bash -c "sed 's|\${PORTAINER_DOMAIN}|$domain|g' '$template' > '$target'"
+  sudo chmod 0644 "$target"
+  needs_reload=1
+fi
 
-log "starting Portainer container"
-docker compose -f "$REPO_ROOT/portainer/docker-compose.yml" up -d
+# Step 3: container.
+running=$(docker ps --filter "name=^core-portainer$" --format '{{.State}}' 2>/dev/null || true)
+if [[ "$running" == "running" ]]; then
+  ok "core-portainer container already running — skipping compose up"
+else
+  log "starting Portainer container"
+  docker compose -f "$REPO_ROOT/portainer/docker-compose.yml" up -d
+  needs_reload=1
+fi
 
-log "reloading nginx"
-"$REPO_ROOT/scripts/reload-nginx.sh"
+# Step 4: nginx reload.
+if [[ "$needs_reload" -eq 1 ]]; then
+  log "reloading nginx (config or container changed)"
+  "$REPO_ROOT/scripts/reload-nginx.sh"
+else
+  ok "no nginx changes — skipping reload"
+fi
+
 ok "Portainer available at https://$domain"
 
 cat <<EOF

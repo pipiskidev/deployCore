@@ -1,5 +1,4 @@
-# Shared bash helpers. Sourced by every script in scripts/.
-# Don't run directly.
+# Shared bash helpers. Sourced by every script in scripts/. Don't run directly.
 
 set -euo pipefail
 
@@ -53,12 +52,16 @@ require_docker() {
     || die "'docker compose' v2 plugin missing. Install docker-compose-plugin (apt: docker-compose-plugin)."
 }
 
+require_root_or_sudo() {
+  if [[ $EUID -eq 0 ]]; then return 0; fi
+  command -v sudo >/dev/null 2>&1 || die "this script needs root via sudo, but sudo is not installed"
+  # Cache sudo credentials up front so the rest of the script doesn't pause repeatedly.
+  sudo -v || die "sudo authentication failed"
+}
+
 # Detect OS family from /etc/os-release. Echoes one of: debian, rhel, unknown.
 detect_os_family() {
-  if [[ ! -r /etc/os-release ]]; then
-    echo unknown
-    return
-  fi
+  if [[ ! -r /etc/os-release ]]; then echo unknown; return; fi
   # shellcheck disable=SC1091
   . /etc/os-release
   case "${ID:-}${ID_LIKE:-}" in
@@ -68,10 +71,7 @@ detect_os_family() {
   esac
 }
 
-# Install Docker Engine + Compose plugin via the official get.docker.com
-# script. Idempotent — safe to call when docker is already installed.
-# Returns 0 if docker is available afterwards (either pre-existing or freshly
-# installed), non-zero if installation failed.
+# Install Docker Engine + Compose plugin (idempotent).
 ensure_docker_installed() {
   if command -v docker >/dev/null 2>&1 \
      && docker info >/dev/null 2>&1 \
@@ -82,20 +82,15 @@ ensure_docker_installed() {
   local os
   os=$(detect_os_family)
   if [[ "$os" == "unknown" ]]; then
-    err "Docker missing and OS not recognized (looked at /etc/os-release)."
-    err "Install Docker manually, then rerun bootstrap.sh:"
+    err "Docker missing and OS not recognized. Install manually:"
     err "  https://docs.docker.com/engine/install/"
     return 1
   fi
 
   warn "Docker (or docker compose v2) not available."
   warn "About to install via the official script: https://get.docker.com"
-  warn "This requires sudo and will:"
-  warn "  - install docker-ce, docker-ce-cli, containerd.io, docker-compose-plugin"
-  warn "  - add user '${USER:-$(whoami)}' to the 'docker' group (re-login required after)"
   printf "Continue? [y/N] "
-  local reply
-  read -r reply
+  local reply; read -r reply
   [[ "$reply" =~ ^[Yy]$ ]] || die "aborted by operator"
 
   require_tool curl
@@ -108,7 +103,6 @@ ensure_docker_installed() {
   log "adding ${USER:-$(whoami)} to the 'docker' group"
   sudo usermod -aG docker "${USER:-$(whoami)}"
 
-  # Try to enable + start the daemon (no-op on systems where systemd isn't init).
   if command -v systemctl >/dev/null 2>&1; then
     sudo systemctl enable --now docker || true
   fi
@@ -123,7 +117,55 @@ ensure_docker_installed() {
   return 1
 }
 
-# Load global .env into the current shell. No-op if missing (some scripts work without it).
+# Install nginx + certbot via the host's package manager. Idempotent.
+ensure_nginx_certbot_installed() {
+  local os; os=$(detect_os_family)
+
+  case "$os" in
+    debian)
+      if ! command -v nginx >/dev/null 2>&1; then
+        log "installing nginx (apt)"
+        sudo apt-get update -qq
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nginx
+      else
+        ok "nginx already installed ($(nginx -v 2>&1 | sed 's/^[^:]*: //'))"
+      fi
+      if ! command -v certbot >/dev/null 2>&1; then
+        log "installing certbot (apt)"
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq certbot
+      else
+        ok "certbot already installed"
+      fi
+      ;;
+    rhel)
+      if ! command -v nginx >/dev/null 2>&1; then
+        log "installing nginx (dnf/yum)"
+        if command -v dnf >/dev/null 2>&1; then
+          sudo dnf install -y -q nginx
+        else
+          sudo yum install -y -q nginx
+        fi
+      else
+        ok "nginx already installed"
+      fi
+      if ! command -v certbot >/dev/null 2>&1; then
+        log "installing certbot (dnf/yum)"
+        if command -v dnf >/dev/null 2>&1; then
+          sudo dnf install -y -q certbot
+        else
+          sudo yum install -y -q certbot
+        fi
+      else
+        ok "certbot already installed"
+      fi
+      ;;
+    *)
+      die "unsupported OS family — install nginx + certbot manually, then rerun bootstrap.sh"
+      ;;
+  esac
+}
+
+# Load global .env into the current shell. No-op if missing.
 load_env() {
   local env_file="$REPO_ROOT/.env"
   if [[ -f "$env_file" ]]; then
@@ -134,9 +176,8 @@ load_env() {
   fi
 }
 
-# Substitute ${PROJECT_NAME}, ${DOMAIN}, ${IMAGE}, ${APP_PORT} placeholders in
-# a file in place. We use a simple sed loop instead of envsubst to avoid
-# accidentally consuming nginx's own $variable references.
+# Substitute ${PROJECT_NAME} and ${DOMAIN} in a file in place. We use sed
+# instead of envsubst to avoid accidentally consuming nginx's $variable refs.
 substitute_placeholders() {
   local file="$1" project_name="$2" domain="$3"
   [[ -f "$file" ]] || die "substitute target missing: $file"
@@ -147,9 +188,25 @@ substitute_placeholders() {
   rm -f "$file.bak"
 }
 
-# Convenience: run docker compose with the core compose file.
-core_compose() {
-  docker compose -f "$REPO_ROOT/core/docker-compose.yml" "$@"
+# Find a free TCP port in [start, end]. Loopback only — we don't care about
+# external bindings. Echoes the port. Dies if none free.
+find_free_port() {
+  local start="${1:-10000}" end="${2:-19999}"
+  local port
+  for port in $(seq "$start" "$end"); do
+    # ss is in iproute2 on every modern Linux. Check that nothing listens on
+    # 127.0.0.1:port; ignore wildcard 0.0.0.0 (different namespace).
+    if ! ss -lnt "src 127.0.0.1:$port" 2>/dev/null | grep -q LISTEN \
+       && ! ss -lnt "src [::1]:$port" 2>/dev/null | grep -q LISTEN; then
+      # Also exclude ports already declared in any project's .env (race-free
+      # against a project that's been added but not yet started).
+      if ! grep -hE "^HOST_PORT=$port\$" "$REPO_ROOT/projects"/*/.env 2>/dev/null | grep -q .; then
+        echo "$port"
+        return
+      fi
+    fi
+  done
+  die "no free port in $start-$end"
 }
 
 # Convenience: run docker compose with a specific project's compose file.

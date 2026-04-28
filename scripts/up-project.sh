@@ -1,18 +1,14 @@
 #!/usr/bin/env bash
-# Bring an existing project up with a chosen profile (or change which subset
-# of its services run).
+# Bring an existing project up with chosen profile(s).
 #
 # Usage:
-#   ./scripts/up-project.sh <name>                       # full profile
-#   ./scripts/up-project.sh <name> backend               # only services in 'backend' profile
-#   ./scripts/up-project.sh <name> backend web           # multiple profiles
-#   ./scripts/up-project.sh <name> --down                # take all services down
-#
-# After changing profiles, services not in the new profile set are NOT
-# automatically removed — docker compose only adds. To get a clean state
-# (only the profiles you ask for), this script first runs `down` then `up`.
-# Pass --no-down to skip the down step (faster, but services from previous
-# profile selections may still be running).
+#   ./scripts/up-project.sh <name>                # full profile
+#   ./scripts/up-project.sh <name> backend        # only backend profile
+#   ./scripts/up-project.sh <name> backend web    # union of profiles
+#   ./scripts/up-project.sh <name> --down         # take all services down
+#   ./scripts/up-project.sh <name> --no-down      # skip the implicit down
+#                                                 (faster, but leftover services
+#                                                  from previous profile may persist)
 
 set -euo pipefail
 
@@ -30,7 +26,7 @@ for arg in "$@"; do
     --down)    down_only=1 ;;
     --no-down) no_down=1 ;;
     --help|-h)
-      sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     -*) die "unknown flag: $arg" ;;

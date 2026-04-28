@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Bring up the optional mail server (shared/mail/).
-#
-# Uses --project-name core so the mail compose can attach to the
-# `core_letsencrypt` named volume created by core/docker-compose.yml.
+# Now that we don't have a `core` compose project, the mail server uses its
+# OWN named-volume namespace (mail_letsencrypt won't exist by default — it
+# bind-mounts /etc/letsencrypt from the host instead).
 
 set -euo pipefail
 
@@ -22,13 +22,13 @@ if [[ ! -f "$mail_dir/mailserver.env" ]]; then
 fi
 
 log "starting mail server"
-docker compose --project-name core -f "$mail_dir/docker-compose.yml" up -d
+docker compose -f "$mail_dir/docker-compose.yml" up -d
 ok "mail is up"
 
 cat <<EOF
 
   Add a mailbox:    docker exec -ti mailserver setup email add user@example.com
   Generate DKIM:    docker exec -ti mailserver setup config dkim
-  Logs:             docker compose --project-name core -f shared/mail/docker-compose.yml logs -f
+  Logs:             docker compose -f shared/mail/docker-compose.yml logs -f
 
 EOF

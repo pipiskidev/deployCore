@@ -1,0 +1,20 @@
+# Optional admin UI. Brought up by bootstrap.sh --with-portainer (or
+# ./scripts/up-portainer.sh). The container binds to 127.0.0.1:9000; host
+# nginx proxies https://${PORTAINER_DOMAIN}/ → 127.0.0.1:9000 and adds TLS,
+# rate limits, security headers, and (optionally) IP allowlist.
+
+services:
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: core-portainer
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9000:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - portainer_data:/data
+    environment:
+      - TZ=${TZ:-Europe/Moscow}
+
+volumes:
+  portainer_data:

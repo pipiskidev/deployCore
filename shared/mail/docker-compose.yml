@@ -1,11 +1,14 @@
-# Opt-in SMTP infrastructure. Brought up independently of core:
+# Opt-in SMTP infrastructure. Brought up independently:
 #
-#   cp mailserver.env.example mailserver.env
-#   $EDITOR mailserver.env
-#   docker compose -f shared/mail/docker-compose.yml up -d
+#   cp shared/mail/mailserver.env.example shared/mail/mailserver.env
+#   $EDITOR shared/mail/mailserver.env
+#   ./scripts/up-mail.sh
 #
-# Reuses the core `letsencrypt` named volume so that certificates issued by
-# core-certbot for the mail hostname are picked up automatically.
+# Mounts /etc/letsencrypt directly from the host (bind mount), so certs
+# issued by the host certbot for the mail hostname are picked up without
+# named-volume juggling. Make sure the host has the cert first:
+#
+#   ./scripts/issue-cert.sh smtp.your-domain.com
 
 services:
   mailserver:
@@ -29,9 +32,7 @@ services:
       - mail-state:/var/mail-state
       - mail-log:/var/log/mail
       - ./config:/tmp/docker-mailserver
-      # Read-only access to the shared letsencrypt volume so postfix/dovecot
-      # use the same certs that nginx serves for the public hostname.
-      - letsencrypt:/etc/letsencrypt:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
     ports:
       - "25:25"     # SMTP (incoming)
       - "465:465"   # SMTPS
@@ -43,12 +44,3 @@ volumes:
   mail-data:
   mail-state:
   mail-log:
-  letsencrypt:
-    external: true
-    # The volume is created by core/docker-compose.yml. Docker prefixes named
-    # volumes with the project name; if you brought core up via the bootstrap
-    # script the actual volume name is `core_letsencrypt`. To use this
-    # mail compose, either:
-    #   - run with --project-name core   (so volume names match), or
-    #   - replace `external: true` with `external: { name: core_letsencrypt }`.
-    name: core_letsencrypt

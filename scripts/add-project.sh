@@ -1,27 +1,25 @@
 #!/usr/bin/env bash
-# Add a new project to a running deployCore platform.
+# Add a new project to a running deployCore platform (host-nginx model).
 #
-# Usage: ./scripts/add-project.sh <name> <domain> [--profile <p>] [--skip-cert] [--skip-up]
+# Usage: ./scripts/add-project.sh <name> <domain> [--profile <p>] [--skip-cert] [--skip-up] [--port <n>]
 #
 # Flags:
 #   --profile <p>   Compose profile to bring up (default: full).
-#                   Examples: backend, web, app — see projects/<name>/docker-compose.yml.
-#                   Can be passed multiple times: --profile backend --profile worker.
-#   --skip-cert     Don't issue a Let's Encrypt cert (DNS not ready yet, manual later).
-#   --skip-up       Don't bring up containers — only scaffold files and (optionally) cert.
-#                   Useful if you want to edit the project's compose first.
+#                   Repeatable: --profile backend --profile worker.
+#   --skip-cert     Don't issue a Let's Encrypt cert (DNS not ready).
+#   --skip-up       Don't bring up containers — only scaffold + cert + nginx wiring.
+#   --port <n>      Use this HOST_PORT instead of auto-assigning.
 #
 # Steps:
 #   1. Validate name and domain.
 #   2. Copy projects/_template/ to projects/<name>/.
-#   3. Substitute ${PROJECT_NAME} and ${DOMAIN} placeholders.
-#   4. Open projects/<name>/.env in $EDITOR (or print path if unset).
-#   5. Issue a Let's Encrypt cert for <domain> (unless --skip-cert).
-#   6. Symlink projects/<name>/nginx.conf into core/nginx/conf.d/<name>.conf.
-#   7. docker compose up -d --profile <p> (unless --skip-up).
-#   8. Reload nginx (unless --skip-up).
-#
-# Idempotent: if projects/<name>/ exists, exits with a clear error.
+#   3. Auto-pick a free HOST_PORT in 10000-19999 (or use --port).
+#   4. Substitute placeholders.
+#   5. Open projects/<name>/.env in $EDITOR (fill IMAGE, APP_PORT, project secrets).
+#   6. Issue Let's Encrypt cert (unless --skip-cert).
+#   7. Symlink projects/<name>/nginx.conf → /etc/nginx/conf.d/<name>.conf.
+#   8. docker compose up -d (unless --skip-up).
+#   9. Reload host nginx (unless --skip-up).
 
 set -euo pipefail
 
@@ -30,6 +28,7 @@ source "$(dirname "$(readlink -f "$0")")/lib/common.sh"
 
 skip_cert=0
 skip_up=0
+fixed_port=""
 profiles=()
 positional=()
 i=1
@@ -38,16 +37,18 @@ while [[ $i -le $# ]]; do
   case "$arg" in
     --skip-cert) skip_cert=1 ;;
     --skip-up)   skip_up=1 ;;
+    --port)
+      i=$((i+1)); [[ $i -le $# ]] || die "--port requires a value"
+      fixed_port="${!i}"
+      ;;
+    --port=*) fixed_port="${arg#*=}" ;;
     --profile)
-      i=$((i+1))
-      [[ $i -le $# ]] || die "--profile requires a value"
+      i=$((i+1)); [[ $i -le $# ]] || die "--profile requires a value"
       profiles+=("--profile" "${!i}")
       ;;
-    --profile=*)
-      profiles+=("--profile" "${arg#*=}")
-      ;;
+    --profile=*) profiles+=("--profile" "${arg#*=}") ;;
     --help|-h)
-      sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     -*) die "unknown flag: $arg (see --help)" ;;
@@ -56,26 +57,34 @@ while [[ $i -le $# ]]; do
   i=$((i+1))
 done
 
-[[ "${#positional[@]}" -eq 2 ]] || die "usage: $(basename "$0") <name> <domain> [--profile <p>] [--skip-cert] [--skip-up]"
+[[ "${#positional[@]}" -eq 2 ]] || die "usage: $(basename "$0") <name> <domain> [--profile <p>] [--port <n>] [--skip-cert] [--skip-up]"
 name="${positional[0]}"
 domain="${positional[1]}"
-
-# Default profile if none provided.
-[[ "${#profiles[@]}" -eq 0 ]] && profiles=(--profile full)
 
 validate_project_name "$name"
 validate_domain "$domain"
 
 require_docker
+require_root_or_sudo
 load_env
 
 project_dir="$REPO_ROOT/projects/$name"
 template_dir="$REPO_ROOT/projects/_template"
-conf_link="$REPO_ROOT/core/nginx/conf.d/${name}.conf"
+conf_link="/etc/nginx/conf.d/${name}.conf"
 
 [[ -d "$template_dir" ]] || die "template missing: $template_dir"
 [[ ! -e "$project_dir" ]] || die "project '$name' already exists at $project_dir"
 [[ ! -e "$conf_link" ]]  || die "nginx config slot already taken: $conf_link"
+
+# Pick a host port.
+if [[ -z "$fixed_port" ]]; then
+  host_port=$(find_free_port 10000 19999)
+  log "auto-assigned HOST_PORT=$host_port"
+else
+  [[ "$fixed_port" =~ ^[0-9]+$ ]] || die "--port must be numeric"
+  host_port="$fixed_port"
+  log "using HOST_PORT=$host_port (from --port)"
+fi
 
 log "copying template → projects/$name/"
 cp -r "$template_dir" "$project_dir"
@@ -85,11 +94,12 @@ substitute_placeholders "$project_dir/docker-compose.yml" "$name" "$domain"
 substitute_placeholders "$project_dir/nginx.conf"          "$name" "$domain"
 substitute_placeholders "$project_dir/README.md"           "$name" "$domain" 2>/dev/null || true
 
-# Initialize .env from the template's .env.example so add-project leaves a
-# real .env file (gitignored) for the operator to edit.
+# Initialize .env from .env.example with HOST_PORT pre-filled.
 if [[ -f "$project_dir/.env.example" && ! -f "$project_dir/.env" ]]; then
   cp "$project_dir/.env.example" "$project_dir/.env"
 fi
+sed -i.bak "s|^HOST_PORT=.*|HOST_PORT=$host_port|" "$project_dir/.env"
+rm -f "$project_dir/.env.bak"
 
 editor="${EDITOR:-${VISUAL:-}}"
 if [[ -n "$editor" ]]; then
@@ -100,17 +110,18 @@ else
   read -r
 fi
 
-# Verify the operator filled in the required vars.
+# Verify required vars filled in.
 # shellcheck disable=SC1090
 source "$project_dir/.env"
 [[ -n "${IMAGE:-}" ]]    || die "IMAGE not set in $project_dir/.env"
 [[ -n "${APP_PORT:-}" ]] || die "APP_PORT not set in $project_dir/.env"
 
-# Now do the second-pass substitution of IMAGE/APP_PORT. We do this AFTER the
-# operator edit so they only have to enter values once.
+# Second-pass substitute IMAGE / APP_PORT / HOST_PORT (HOST_PORT was already
+# filled, but template may have ${HOST_PORT} elsewhere too).
 sed -i.bak \
   -e "s|\${IMAGE}|${IMAGE}|g" \
   -e "s|\${APP_PORT}|${APP_PORT}|g" \
+  -e "s|\${HOST_PORT}|${host_port}|g" \
   "$project_dir/docker-compose.yml" "$project_dir/nginx.conf"
 rm -f "$project_dir/docker-compose.yml.bak" "$project_dir/nginx.conf.bak"
 
@@ -121,13 +132,14 @@ else
   warn "--skip-cert: nginx will fail to reload until $domain has a cert at /etc/letsencrypt/live/$domain/"
 fi
 
-log "symlinking nginx config"
-ln -s "../../projects/$name/nginx.conf" "$conf_link"
+log "linking nginx config to /etc/nginx/conf.d/"
+sudo ln -s "$project_dir/nginx.conf" "$conf_link"
 
 if [[ "$skip_up" -eq 1 ]]; then
   warn "--skip-up: project scaffolded but containers not started."
   warn "When ready: ./scripts/up-project.sh $name [profile...]"
 else
+  [[ "${#profiles[@]}" -eq 0 ]] && profiles=(--profile full)
   log "bringing project up (${profiles[*]})"
   project_compose "$name" "${profiles[@]}" up -d
 
@@ -141,13 +153,14 @@ ${C_BOLD}Project '$name' added.${C_RESET}
 
   Location:    $project_dir
   Domain:      $domain
+  Host port:   127.0.0.1:$host_port  (proxied by nginx)
   Nginx conf:  $conf_link → projects/$name/nginx.conf
-  Profile:     ${profiles[*]}
+  Profile:     ${profiles[*]:---profile full}
   Smoke test:  curl -I https://$domain
 
   Manage:
-    ./scripts/up-project.sh $name [profile]      # bring up (or change which services run)
-    ./scripts/remove-project.sh $name            # take down
+    ./scripts/up-project.sh $name [profile]
+    ./scripts/remove-project.sh $name
     docker compose -f projects/$name/docker-compose.yml ps
     docker compose -f projects/$name/docker-compose.yml logs -f
 

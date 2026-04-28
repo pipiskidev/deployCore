@@ -1,11 +1,16 @@
 # deployCore
 
-A two-layer Docker platform for a single Linux server:
+Modular Docker platform for a single Linux server. **Host nginx + host certbot**
+front the public internet; backends run as Docker containers bound to
+`127.0.0.1:<port>`.
 
-- **`core/`** — install once. Nginx (containerized), Certbot with auto-renewal, Portainer.
-- **`projects/<name>/`** — add many. Each project ships a single `docker-compose.yml`, a project `.env`, and an `nginx.conf` that registers a domain with the core nginx.
+- **`nginx/`** — config files copied to `/etc/nginx/` by `scripts/bootstrap.sh`.
+- **`portainer/`** — opt-in admin UI (Docker container, loopback bind).
+- **`shared/mail/`** — opt-in SMTP server (Docker container).
+- **`projects/<name>/`** — apps. Each project has one `docker-compose.yml`,
+  one `.env`, and one `nginx.conf` symlinked into `/etc/nginx/conf.d/`.
 
-Designed so that adding a new project to a running server is one command:
+Adding a new project to a running server is one command:
 
 ```
 ./scripts/add-project.sh myapp myapp.example.com
@@ -13,152 +18,130 @@ Designed so that adding a new project to a running server is one command:
 
 ## Quick start (fresh Ubuntu 22.04 / Debian 12 / RHEL family server)
 
-Only `git`, `curl`, and `sudo` need to be present beforehand. `bootstrap.sh`
-detects a missing Docker and installs Docker Engine + Compose plugin via the
-official `get.docker.com` script (after asking for confirmation).
+Only `git`, `curl`, and `sudo` need to be present beforehand.
+`scripts/bootstrap.sh` installs everything else: Docker (via `get.docker.com`),
+nginx (apt/dnf), certbot (apt/dnf), and enables `certbot.timer` for renewals.
 
 ```bash
-git clone <this-repo> deployCore && cd deployCore
+git clone https://github.com/pipiskidev/deployCore.git
+cd deployCore
 
 # 1. Fill in global infra vars
 cp .env.example .env
 $EDITOR .env                # set LETSENCRYPT_EMAIL at minimum
 
-# 2. Bring up core (always nginx + certbot, optional portainer/mail)
-./scripts/bootstrap.sh                     # interactive prompts
-# or non-interactive:
-./scripts/bootstrap.sh --yes               # only mandatory core, no extras
-./scripts/bootstrap.sh --with-portainer    # +portainer
+# 2. Bootstrap (installs deps, syncs nginx/, asks about Portainer & mail)
+./scripts/bootstrap.sh                     # interactive
+./scripts/bootstrap.sh --yes               # only nginx + certbot, no extras
+./scripts/bootstrap.sh --with-portainer    # +portainer (asks for PORTAINER_DOMAIN)
 ./scripts/bootstrap.sh --with-portainer --with-mail
 
-# 3. Add a project (full = backend + web + db; or pick a profile)
+# 3. Add a project
 ./scripts/add-project.sh myapp myapp.example.com
 ./scripts/add-project.sh myapi myapi.example.com --profile backend
 ./scripts/add-project.sh static static.example.com --profile web --skip-cert
 ```
 
-After step 2 you have a running nginx that 444s any unknown host and serves
-`/.well-known/acme-challenge/` for any domain pointed at it. Step 3 issues a
-TLS certificate, links the project's nginx config, and brings the project up.
+After step 2 you have a host-running nginx that 444s any unknown host and
+serves `/.well-known/acme-challenge/` for any domain. Step 3 issues a TLS
+certificate, creates a project folder from the template, symlinks its
+`nginx.conf` into `/etc/nginx/conf.d/`, and brings the project up.
 
 If `bootstrap.sh` had to install Docker, it adds your user to the `docker`
-group — log out and back in (or `newgrp docker`) before rerunning, so the
-shell can reach the daemon without sudo.
-
-## Modular install — what's optional, what's mandatory
-
-| Component | Default | How to enable |
-|-----------|---------|---------------|
-| **nginx + certbot** (in `core/`) | always on | mandatory; comes up with `bootstrap.sh` |
-| **portainer** (in `core/`) | off | `bootstrap.sh --with-portainer`, or interactive prompt answers `y` |
-| **mail** (in `shared/mail/`) | off | `bootstrap.sh --with-mail`, or `./scripts/up-mail.sh` later |
-| **a project** (in `projects/<name>/`) | off | `./scripts/add-project.sh <name> <domain>` |
-
-For a project, you can pick which subset of its services runs via compose
-profiles. The `_template` and `max` projects ship with these:
-
-| Profile | What it runs |
-|---------|--------------|
-| `full`  | every service in the project |
-| `backend` | backend + database (no public frontend) |
-| `web`   | only the public frontend (e.g. when backend lives elsewhere) |
-| `app`   | only the single `<name>-app` container (template default) |
-
-```bash
-./scripts/add-project.sh blog blog.example.com --profile backend
-# Later: switch to running both backend and web:
-./scripts/up-project.sh blog backend web
-# Or stop everything for the project (data preserved):
-./scripts/up-project.sh blog --down
-```
-
-Adding a new profile to your project: edit
-`projects/<name>/docker-compose.yml` and put the relevant services under
-`profiles: [your-profile-name]`. No script changes needed.
+group — log out and back in (or `newgrp docker`) before rerunning.
 
 ## Layout
 
 ```
 deployCore/
-├── .env.example, .env               # global infra vars (LETSENCRYPT_EMAIL, TZ, ACME_STAGING)
-├── core/                            # platform — installed once
-│   ├── docker-compose.yml
-│   ├── nginx/
-│   │   ├── Dockerfile               # nginx:alpine + inotify reload-on-renew
-│   │   ├── nginx.conf
-│   │   ├── conf.d/
-│   │   │   └── _default.conf        # catch-all on :80, serves acme-challenge for any host
-│   │   └── snippets/                # ssl-common, security-headers, proxy-common, rate-limits, bot-detection
-│   └── certbot/
-│       └── webroot/                 # bind-mount: certbot writes acme-challenge here, nginx serves from here
-├── projects/                        # apps — one folder per project
-│   ├── _template/                   # source for add-project.sh
-│   └── max/                         # first project (the original deployCore reference app)
+├── .env.example, .env                  # LETSENCRYPT_EMAIL, TZ, ACME_STAGING, PORTAINER_DOMAIN
+├── nginx/                              # source of truth → copied to /etc/nginx/
+│   ├── nginx.conf
+│   ├── conf.d/
+│   │   ├── _default.conf               # catch-all on :80, serves acme-challenge
+│   │   └── portainer.conf.template     # rendered to /etc/nginx/conf.d/portainer.conf
+│   └── snippets/                       # ssl-common, security-headers, proxy-common,
+│                                       # rate-limits, bot-detection, websocket-upgrade
+├── portainer/                          # opt-in admin UI
+│   └── docker-compose.yml              # container bound to 127.0.0.1:9000
+├── projects/                           # apps
+│   ├── _template/                      # copy source for add-project.sh
+│   └── max/                            # first project (Spring Boot + Next.js + Mongo)
 ├── shared/
-│   └── mail/                        # opt-in SMTP server (docker-mailserver)
+│   └── mail/                           # opt-in SMTP (docker-mailserver)
 └── scripts/
-    ├── bootstrap.sh                 # one-time setup; --with-portainer / --with-mail / --yes
-    ├── add-project.sh <name> <domain> [--profile p] [--skip-cert] [--skip-up]
-    ├── up-project.sh <name> [profile...] [--down]   # bring an existing project up/down
-    ├── remove-project.sh <name>     # take a project down + unlink nginx (data preserved)
-    ├── up-mail.sh                   # bring shared/mail/ up (requires mailserver.env)
-    ├── issue-cert.sh <domain>       # issue a TLS cert without adding a project
-    ├── reload-nginx.sh              # nginx -t && nginx -s reload
-    └── lib/common.sh                # shared bash helpers + Docker auto-installer
+    ├── bootstrap.sh                    # one-time setup: deps + sync + optional services
+    ├── sync-nginx.sh                   # copy nginx/ → /etc/nginx/, validate, reload
+    ├── add-project.sh                  # add-project.sh <name> <domain> [--profile p] [--port n]
+    ├── up-project.sh                   # bring an existing project up/down with profiles
+    ├── remove-project.sh               # take a project down + unlink nginx (data preserved)
+    ├── up-portainer.sh                 # render portainer.conf, issue cert, start container
+    ├── up-mail.sh                      # bring shared/mail/ up
+    ├── issue-cert.sh                   # certbot certonly --webroot -d <domain>
+    ├── reload-nginx.sh                 # nginx -t && systemctl reload nginx
+    └── lib/common.sh                   # bash helpers (validators, find_free_port, installers)
 ```
 
-## Networking
+## Modular install — what's optional, what's mandatory
 
-All public-facing services join an external Docker network `web`, created by
-`bootstrap.sh`. Core nginx joins `web` and is the only container that binds
-host ports (80, 443).
+| Component | Default | How to enable | Where it runs |
+|-----------|---------|---------------|---------------|
+| **nginx** | always on | apt installed by `bootstrap.sh` | host (`systemctl`) |
+| **certbot** | always on | apt installed by `bootstrap.sh`; `certbot.timer` auto-renews | host (`systemctl`) |
+| **portainer** | off | `bootstrap.sh --with-portainer` or `./scripts/up-portainer.sh` | docker, `127.0.0.1:9000` |
+| **mail** | off | `bootstrap.sh --with-mail` or `./scripts/up-mail.sh` | docker, ports 25/465/587/143/993 |
+| **a project** | off | `./scripts/add-project.sh <name> <domain>` | docker, `127.0.0.1:<auto-port>` |
 
-Each project also gets a private `<project>-internal` network for things that
-nginx must not reach (databases, queues). Containers needed by nginx join
-`web`. Container names are globally unique and include the project prefix
-(e.g. `max-backend`, `max-web`, `max-mongo`).
+For a project, you can pick which subset of its services runs via compose
+profiles. `_template` and `max` ship with these:
+
+| Profile | What runs |
+|---------|-----------|
+| `full` | every service in the project |
+| `backend` | backend + database (no public frontend) |
+| `web` | only the public frontend |
+| `app` | only the single `<name>-app` container (template default) |
+
+```bash
+./scripts/add-project.sh blog blog.example.com --profile backend
+./scripts/up-project.sh blog backend web        # union of profiles
+./scripts/up-project.sh blog --down             # stop everything (data preserved)
+```
+
+## Networking model
+
+- nginx runs on the host and binds `:80` and `:443` directly.
+- Each project's containers bind to `127.0.0.1:<HOST_PORT>` only — never public.
+- nginx proxies `https://<domain>/` → `http://127.0.0.1:<HOST_PORT>`.
+- Inside a project, services that talk to each other but NOT to nginx (like
+  databases) join a private `<name>-internal` docker network and don't bind
+  any ports.
+- HOST_PORT for new projects is auto-assigned by `add-project.sh` from the
+  range 10000-19999 (avoiding ports already in use OR claimed by other
+  projects' `.env` files).
 
 ## TLS
 
-`core-certbot` runs `certbot renew` every 12 hours. After a successful renewal
-it touches `/var/www/certbot/.reload`; the nginx container's entrypoint
-watches that file with `inotifywait` and runs `nginx -s reload` when it
-changes. No host cron needed.
+- `certbot.timer` (systemd, enabled by `bootstrap.sh`) runs `certbot renew`
+  twice a day. No host cron needed.
+- `bootstrap.sh` installs a deploy-hook (`/etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh`)
+  so renewals trigger `systemctl reload nginx` automatically.
+- The catch-all `/etc/nginx/conf.d/_default.conf` serves
+  `/.well-known/acme-challenge/` for any unknown host on :80, so initial
+  issuance for a new domain works without per-domain temp configs.
+- `ACME_STAGING=1` in `.env` switches issuance to staging — useful when
+  iterating on `add-project.sh`.
 
-The `core/nginx/conf.d/_default.conf` server block serves
-`/.well-known/acme-challenge/` for any unknown host, so initial issuance for a
-new domain works without per-domain temp configs.
+## Editing nginx files
 
-`ACME_STAGING=1` in `.env` switches issuance to Let's Encrypt staging — useful
-when iterating on `add-project.sh`.
-
-## Adding a project from scratch
-
-```bash
-./scripts/add-project.sh blog blog.example.com
-```
-
-This:
-1. copies `projects/_template/` to `projects/blog/`,
-2. substitutes `${PROJECT_NAME}` and `${DOMAIN}` everywhere,
-3. opens `projects/blog/.env` in `$EDITOR` for any project-specific vars,
-4. issues a Let's Encrypt cert for `blog.example.com`,
-5. symlinks `projects/blog/nginx.conf` into `core/nginx/conf.d/blog.conf`,
-6. brings the project up: `docker compose -f projects/blog/docker-compose.yml up -d`,
-7. reloads nginx.
-
-## Adding a project from an existing compose file
-
-If you already have a `docker-compose.yml` for an OSS app:
-
-1. Drop it into `projects/<name>/docker-compose.yml`.
-2. Make sure containers have unique names (`<name>-<service>`).
-3. The publicly-reachable service must join the `web` network (`external: true`).
-4. Don't expose any host ports — nginx reaches it by container name.
-5. Write `projects/<name>/nginx.conf` (use `_template/nginx.conf` as a base).
-6. Issue a cert: `./scripts/issue-cert.sh <domain>`.
-7. Symlink: `ln -sf ../../projects/<name>/nginx.conf core/nginx/conf.d/<name>.conf`.
-8. Up: `docker compose -f projects/<name>/docker-compose.yml up -d && ./scripts/reload-nginx.sh`.
+- **Global stuff** (snippets, the main `nginx.conf`, `_default.conf`): edit in
+  the repo `nginx/`, then `./scripts/sync-nginx.sh` to copy + reload.
+- **Per-project nginx**: `/etc/nginx/conf.d/<name>.conf` is a SYMLINK into
+  `projects/<name>/nginx.conf`, so edits apply on
+  `./scripts/reload-nginx.sh` — no sync needed.
+- **Portainer config** (`/etc/nginx/conf.d/portainer.conf`): generated from
+  `nginx/conf.d/portainer.conf.template`. Re-run `./scripts/up-portainer.sh`
+  to regenerate.
 
 ## Removing a project
 
@@ -166,52 +149,17 @@ If you already have a `docker-compose.yml` for an OSS app:
 ./scripts/remove-project.sh blog
 ```
 
-Brings the project down, removes its nginx-conf symlink, reloads nginx. Does
-**not** delete the project folder, its `.env`, or any named volumes — that's
-manual and explicit.
-
-TLS certificates are also left intact. Revoke them yourself if needed
-(`docker compose -f core/docker-compose.yml run --rm certbot revoke ...`).
-
-## Migrating from the original deployCore
-
-The old layout (`backend/`, `frontend/`, `database/`, `mail/`, `portainer/`,
-`1-web.conf`, top-level `nginx.conf`) is **kept on disk for reference** while
-v2 is being verified. Once you've confirmed the new stack works on a target
-server, delete those files manually:
-
-```bash
-rm -rf backend frontend database mail portainer 1-web.conf nginx.conf
-```
-
-Important migration notes:
-
-- **Rotate the MongoDB password.** The literal in the old `backend/docker-compose.yml`
-  and `database/docker-compose.yml` is compromised (it lived in plaintext in this
-  repo). On the running mongo, run:
-  ```
-  mongosh -u root -p <old-password> --eval 'db.adminCommand({setParameter:1,...}); db.changeUserPassword("root","<new-password>")'
-  ```
-  Put the new password into `projects/max/.env` as `MONGO_PASSWORD`.
-
-- **Drop `network_mode: host`.** The old compose files used host networking; v2
-  uses the `web` bridge network. Backends are no longer reachable on
-  `127.0.0.1:<port>` from the host — they're reachable only via nginx. If
-  anything other than nginx talked to backends through `127.0.0.1`, you need
-  to either add it to the `web` network or expose ports explicitly (not
-  recommended).
-
-- **Other domains.** `1-web.conf` covered ~14 unrelated domains (`zaytsv.ru`,
-  `getatom.ru`, `tfpro.ru`, etc.). v2 ships only `max`. Configurations for
-  other projects belong in their own deployCore deployments or their own
-  repos.
+Stops the project's containers, removes its `/etc/nginx/conf.d/` symlink,
+reloads nginx. Does **not** delete `projects/blog/`, its `.env`, named
+volumes, or TLS certificates — those require explicit operator action.
 
 ## Operational notes
 
-- **Portainer** binds only to `127.0.0.1:9000`. Reach it via SSH tunnel:
-  `ssh -L 9000:localhost:9000 <user>@<server>` then open `http://localhost:9000`.
-- **Mail** (`shared/mail/`) is opt-in. Bring up with
-  `docker compose -f shared/mail/docker-compose.yml up -d` after configuring
-  `shared/mail/mailserver.env`.
-- **Logs** for any container: `docker compose -f core/docker-compose.yml logs -f nginx`
-  or via Portainer.
+- **Portainer security**: set a strong admin password on first login. To
+  restrict by IP, edit `/etc/nginx/conf.d/portainer.conf` and uncomment the
+  `allow`/`deny` block, then `./scripts/reload-nginx.sh`.
+- **Mail** (`shared/mail/`) needs port 25 open at your hosting provider; many
+  block it by default. DNS records (MX, SPF, DKIM, DMARC, PTR) are NOT
+  configured by this stack — set them up at your DNS provider.
+- **Logs**: `sudo journalctl -u nginx -f` for nginx, `docker compose -f
+  projects/max/docker-compose.yml logs -f` for a project.

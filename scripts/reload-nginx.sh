@@ -1,20 +1,19 @@
 #!/usr/bin/env bash
-# Validate the nginx config inside the core-nginx container, then reload.
-# Exits non-zero if the validation fails — nginx keeps serving the previous
-# config in that case.
+# Validate the host nginx config, then reload.
+# nginx keeps serving the previous config if validation fails.
 
 set -euo pipefail
 
 # shellcheck source=lib/common.sh
 source "$(dirname "$(readlink -f "$0")")/lib/common.sh"
 
-require_docker
+require_root_or_sudo
 
 log "running nginx -t"
-if ! core_compose exec -T nginx nginx -t; then
-  die "nginx config invalid — not reloading. Fix the offending conf.d/*.conf and rerun."
+if ! sudo nginx -t; then
+  die "nginx config invalid — not reloading. Fix the offending /etc/nginx/conf.d/*.conf and rerun."
 fi
 
 log "reloading nginx"
-core_compose exec -T nginx nginx -s reload
+sudo systemctl reload nginx
 ok "nginx reloaded"

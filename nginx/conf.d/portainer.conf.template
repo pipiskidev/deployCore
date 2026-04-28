@@ -1,0 +1,65 @@
+# Portainer reverse proxy template (host nginx → docker portainer).
+#
+# bootstrap.sh substitutes ${PORTAINER_DOMAIN} and writes the result to
+# /etc/nginx/conf.d/portainer.conf (gitignored in repo; only the .template
+# is committed).
+#
+# IP allowlist (recommended):
+# Portainer is a privileged admin UI. By default this template exposes it to
+# the public internet over TLS. Uncomment the `allow`/`deny` block below to
+# restrict access to your office/VPN IPs. Combine with a strong admin
+# password set on first login.
+
+server {
+    listen      80;
+    listen      [::]:80;
+    server_name ${PORTAINER_DOMAIN};
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+        default_type "text/plain";
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen      443 ssl;
+    listen      [::]:443 ssl;
+    http2       on;
+    server_name ${PORTAINER_DOMAIN};
+
+    ssl_certificate         /etc/letsencrypt/live/${PORTAINER_DOMAIN}/fullchain.pem;
+    ssl_certificate_key     /etc/letsencrypt/live/${PORTAINER_DOMAIN}/privkey.pem;
+    ssl_trusted_certificate /etc/letsencrypt/live/${PORTAINER_DOMAIN}/chain.pem;
+
+    include /etc/nginx/snippets/ssl-common.conf;
+    include /etc/nginx/snippets/security-headers.conf;
+
+    # IP allowlist — uncomment and customize before exposing publicly.
+    # allow 192.0.2.0/24;       # office network
+    # allow 198.51.100.42;      # home IP
+    # deny  all;
+
+    location / {
+        limit_req  zone=general burst=20 nodelay;
+        limit_conn conn_per_ip 30;
+
+        include /etc/nginx/snippets/proxy-common.conf;
+
+        # WebSocket upgrade — Portainer's container terminal needs this.
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+
+        # Long-running streams: image pulls, container logs, exec sessions.
+        proxy_buffering         off;
+        proxy_request_buffering off;
+        proxy_read_timeout      3600s;
+        proxy_send_timeout      3600s;
+
+        # Portainer container binds to 127.0.0.1:9000 on the host.
+        proxy_pass http://127.0.0.1:9000;
+    }
+}

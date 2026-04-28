@@ -1,6 +1,0 @@
-# Bind-mounted into both nginx (read-only at /var/www/certbot) and certbot
-# (read-write at /var/www/certbot). Certbot writes acme-challenge tokens here
-# during HTTP-01 issuance/renewal; nginx serves them via _default.conf.
-#
-# Renewal trigger: certbot --deploy-hook touches .reload here, nginx
-# entrypoint inotifywaits on this dir and runs `nginx -s reload`.

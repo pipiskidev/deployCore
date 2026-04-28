@@ -1,25 +1,25 @@
 #!/usr/bin/env bash
 # One-time platform setup. Idempotent — safe to rerun.
 #
-# By default brings up only the mandatory core: nginx + certbot. Other
-# components are opt-in.
+# Architecture: HOST nginx + HOST certbot (apt-installed). Backends run in
+# Docker and bind to 127.0.0.1:<port>; nginx proxies to those loopback ports.
+# Optional Portainer and mail still run in Docker.
 #
 # Usage:
-#   ./scripts/bootstrap.sh                        # interactive: asks about each optional component
-#   ./scripts/bootstrap.sh --yes                  # accept defaults (no prompts, no extras)
-#   ./scripts/bootstrap.sh --with-portainer       # +portainer
-#   ./scripts/bootstrap.sh --with-mail            # +mail (shared/mail/)
+#   ./scripts/bootstrap.sh                      # interactive
+#   ./scripts/bootstrap.sh --yes                # accept defaults (no extras)
+#   ./scripts/bootstrap.sh --with-portainer     # +portainer (asks for PORTAINER_DOMAIN if missing)
+#   ./scripts/bootstrap.sh --with-mail          # +mail
 #   ./scripts/bootstrap.sh --with-portainer --with-mail
-#   ./scripts/bootstrap.sh --no-prompt            # alias for --yes
 #
 # Steps:
 #   1. Install Docker if missing (Debian/Ubuntu/RHEL family).
-#   2. Verify Docker + Docker Compose v2 are present.
+#   2. Install host nginx + certbot via package manager.
 #   3. Ensure .env exists; if not, copy from .env.example and bail.
-#   4. Create the external Docker network 'web' if missing.
-#   5. Bring up core nginx + certbot (always).
-#   6. Optionally bring up portainer.
-#   7. Optionally bring up mail (shared/mail/).
+#   4. Sync nginx/ → /etc/nginx/, validate, reload.
+#   5. Enable certbot.timer (auto-renew via systemd).
+#   6. Optionally bring up Portainer (./scripts/up-portainer.sh).
+#   7. Optionally bring up mail (./scripts/up-mail.sh).
 
 set -euo pipefail
 
@@ -35,7 +35,7 @@ for arg in "$@"; do
     --with-mail)      with_mail=1 ;;
     --yes|--no-prompt) no_prompt=1 ;;
     --help|-h)
-      sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *) die "unknown flag: $arg (see --help)" ;;
@@ -54,9 +54,15 @@ ask_yn() {
   [[ "$reply" =~ ^[Yy]$ ]]
 }
 
+# Step 1: Docker (only needed for project containers + Portainer + mail).
 ensure_docker_installed
 require_docker
 
+# Step 2: host nginx + certbot.
+require_root_or_sudo
+ensure_nginx_certbot_installed
+
+# Step 3: .env.
 if [[ ! -f "$REPO_ROOT/.env" ]]; then
   if [[ -f "$REPO_ROOT/.env.example" ]]; then
     cp "$REPO_ROOT/.env.example" "$REPO_ROOT/.env"
@@ -71,43 +77,47 @@ load_env
 [[ "${LETSENCRYPT_EMAIL:-admin@example.com}" != "admin@example.com" ]] \
   || die "LETSENCRYPT_EMAIL still at the example default. Edit .env first."
 
-if ! docker network inspect web >/dev/null 2>&1; then
-  log "creating Docker network 'web'"
-  docker network create web >/dev/null
-  ok "network 'web' created"
+# Step 4: sync nginx configs to /etc/nginx and reload.
+log "syncing repo nginx/ → /etc/nginx/"
+"$REPO_ROOT/scripts/sync-nginx.sh"
+
+# Step 4b: enable nginx so it survives reboots.
+sudo systemctl enable --now nginx
+
+# Step 5: certbot auto-renewal via systemd timer (installed by certbot package).
+if systemctl list-unit-files 2>/dev/null | grep -q '^certbot\.timer'; then
+  log "enabling certbot.timer (twice-daily renewal check)"
+  sudo systemctl enable --now certbot.timer
+  ok "certbot.timer is active"
 else
-  ok "network 'web' already exists"
+  warn "certbot.timer not found — your certbot package may not include it."
+  warn "Renewals would need a manual cron entry: 0 3 * * * certbot renew --quiet"
 fi
 
-# Ask about optional components if not explicitly toggled by flags.
+# Step 6: Portainer.
 if [[ "$with_portainer" -eq 0 && "$no_prompt" -eq 0 ]]; then
-  ask_yn "Install Portainer (admin UI on 127.0.0.1:9000)?" N && with_portainer=1
+  ask_yn "Install Portainer (publicly exposed admin UI on a dedicated subdomain)?" N \
+    && with_portainer=1
 fi
+if [[ "$with_portainer" -eq 1 ]]; then
+  if [[ -z "${PORTAINER_DOMAIN:-}" && "$no_prompt" -eq 1 ]]; then
+    die "--with-portainer + --yes requires PORTAINER_DOMAIN set in .env"
+  fi
+  log "running up-portainer.sh"
+  "$REPO_ROOT/scripts/up-portainer.sh"
+fi
+
+# Step 7: mail.
 if [[ "$with_mail" -eq 0 && "$no_prompt" -eq 0 ]]; then
   ask_yn "Install mail server (shared/mail/, opt-in SMTP)?" N && with_mail=1
 fi
-
-# Compose --profile flags. Empty string = no profiles = only services without
-# profile come up (nginx, certbot).
-core_profiles=()
-[[ "$with_portainer" -eq 1 ]] && core_profiles+=(--profile portainer)
-
-log "starting core (nginx + certbot$([[ $with_portainer -eq 1 ]] && echo ' + portainer'))"
-core_compose "${core_profiles[@]}" up -d --build
-ok "core is up"
-
-log "verifying nginx config"
-core_compose exec -T nginx nginx -t
-
 if [[ "$with_mail" -eq 1 ]]; then
   if [[ ! -f "$REPO_ROOT/shared/mail/mailserver.env" ]]; then
     cp "$REPO_ROOT/shared/mail/mailserver.env.example" "$REPO_ROOT/shared/mail/mailserver.env"
     warn "created shared/mail/mailserver.env from example."
     warn "Edit it (MAIL_DOMAIN, LETSENCRYPT_DOMAIN, LETSENCRYPT_EMAIL) and rerun: ./scripts/up-mail.sh"
   else
-    log "starting mail server"
-    docker compose --project-name core -f "$REPO_ROOT/shared/mail/docker-compose.yml" up -d
-    ok "mail is up"
+    "$REPO_ROOT/scripts/up-mail.sh"
   fi
 fi
 
@@ -116,9 +126,9 @@ cat <<EOF
 ${C_BOLD}Bootstrap complete.${C_RESET}
 
   What's running:
-    core-nginx       (reverse proxy on :80/:443)
-    core-certbot     (12h renewal loop)
-$([[ $with_portainer -eq 1 ]] && echo "    core-portainer   (admin UI, 127.0.0.1:9000)")
+    nginx            (host service, :80/:443)
+    certbot.timer    (twice-daily renewal check)
+$([[ $with_portainer -eq 1 ]] && echo "    portainer        (admin UI at https://${PORTAINER_DOMAIN:-})")
 $([[ $with_mail -eq 1 ]] && echo "    mailserver       (SMTP/IMAP)")
 
   Next:
@@ -126,9 +136,12 @@ $([[ $with_mail -eq 1 ]] && echo "    mailserver       (SMTP/IMAP)")
     Bring a project up:   ./scripts/up-project.sh <name> [profile]
     Reload nginx:         ./scripts/reload-nginx.sh
     Issue/renew cert:     ./scripts/issue-cert.sh <domain>
-$([[ $with_portainer -eq 1 ]] && echo "
-  Portainer:
-    ssh -L 9000:localhost:9000 \$USER@\$(hostname -f 2>/dev/null || hostname)
-    then open http://localhost:9000")
+    Sync nginx changes:   ./scripts/sync-nginx.sh
+
+  Editing nginx files:
+    The source of truth is the repo (nginx/). After editing, run
+    ./scripts/sync-nginx.sh to copy + reload. Project configs
+    (/etc/nginx/conf.d/<name>.conf) are SYMLINKS to projects/<name>/nginx.conf,
+    so edits apply immediately on ./scripts/reload-nginx.sh — no sync needed.
 
 EOF

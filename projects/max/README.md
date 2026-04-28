@@ -1,31 +1,32 @@
-# max — first project
-
-Equivalent of the original `deployCore/{backend,frontend,database}/`
-configurations, restructured for the v2 platform layout.
+# max — first project (host-nginx model)
 
 ## Services
 
-| Container | Image | Networks | Public? |
-|-----------|-------|----------|---------|
-| `max-backend` | `openjdk:17-jdk-slim` | `web`, `max-internal` | Yes (via nginx → :8080) |
-| `max-web` | `node:20-alpine` | `web` | Yes (via nginx → :3000) |
-| `max-mongo` | `mongo:7` | `max-internal` only | No |
+| Container | Image | Host port | Purpose |
+|-----------|-------|-----------|---------|
+| `max-backend` | `openjdk:17-jdk-slim` | `127.0.0.1:8066` → :8080 | Spring Boot API |
+| `max-web` | `node:20-alpine` | `127.0.0.1:3005` → :3000 | Next.js frontend |
+| `max-mongo` | `mongo:7` | (none — internal only) | Database |
+
+Both backend and web bind to `127.0.0.1` only. Public access is via host
+nginx, which proxies `https://${MAX_DOMAIN}/` → those loopback ports per
+[`nginx.conf`](nginx.conf).
 
 ## First-time setup
 
 ```bash
 # 1. Configure secrets
 cp .env.example .env
-$EDITOR .env                                    # set MAX_DOMAIN, MONGO_PASSWORD, ...
+$EDITOR .env                   # set MAX_DOMAIN, MONGO_PASSWORD, paths
 
 # 2. Substitute the real domain in nginx.conf
 sed -i "s/max.example.com/$(grep '^MAX_DOMAIN=' .env | cut -d= -f2)/g" nginx.conf
 
-# 3. Issue TLS certificate (core must be running first — see ../../README.md)
+# 3. Issue TLS certificate (host certbot — bootstrap.sh must already have run)
 ../../scripts/issue-cert.sh "$(grep '^MAX_DOMAIN=' .env | cut -d= -f2)"
 
-# 4. Symlink nginx config and reload
-ln -sf "$(pwd)/nginx.conf" ../../core/nginx/conf.d/max.conf
+# 4. Symlink nginx config into /etc/nginx/conf.d/, reload
+sudo ln -sf "$(pwd)/nginx.conf" /etc/nginx/conf.d/max.conf
 ../../scripts/reload-nginx.sh
 
 # 5. Bring up all three services
@@ -40,23 +41,23 @@ docker compose --profile web     up -d   # max-web only (e.g. backend deployed e
 docker compose --profile full    up -d   # all three
 ```
 
-## Migrating from the old deployCore
+## Migrating from the original deployCore
 
-The old repo had three separate compose files (`backend/`, `frontend/`,
-`database/`) with `network_mode: host` and a hardcoded MongoDB password. To
-migrate the live server:
+Old setup ran with `network_mode: host`, so backends listened directly on the
+host network. New setup uses bridged docker with explicit loopback bindings.
 
-1. Stop the old containers:
+1. Stop old containers: `docker rm -f max.backend max.web mongodb`.
+2. **Rotate the MongoDB password** — the literal in the old repo is
+   compromised. In the running mongo:
    ```
-   docker rm -f max.backend max.web mongodb
+   mongosh -u root -p <old-password> \
+     --eval 'db.changeUserPassword("root","<new-password>")'
    ```
-2. Rotate the MongoDB password (see `.env.example`).
-3. The mongo data volume from the old setup is named `mongo-data` (per
-   `database/docker-compose.yml`) and will not be picked up by `max-mongo`
-   (which uses `max-mongo-data`). To preserve data, either:
-   - Dump and restore: `mongodump` against the old container, then
-     `mongorestore` into the new `max-mongo`.
-   - Or rename the old volume: `docker volume create max-mongo-data &&
-     docker run --rm -v mongo-data:/from -v max-mongo-data:/to alpine
-     sh -c "cd /from && cp -av . /to"`.
-4. Bring up new stack with `docker compose --profile full up -d`.
+   Update `MONGO_PASSWORD` in `.env`.
+3. The old volume was named `mongo-data` (per `database/docker-compose.yml`);
+   new compose creates `max-mongo-data`. Migrate data:
+   ```
+   docker run --rm -v mongo-data:/from -v max-mongo-data:/to alpine \
+     sh -c "cd /from && cp -av . /to"
+   ```
+4. Bring up new stack: `docker compose --profile full up -d`.

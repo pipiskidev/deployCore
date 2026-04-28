@@ -1,6 +1,6 @@
 # Project template. Substituted by add-project.sh:
 #   ${PROJECT_NAME} → project slug, used as container name prefix
-#   ${IMAGE}        → docker image (e.g. node:20-alpine, openjdk:17-jdk-slim)
+#   ${IMAGE}        → docker image (e.g. node:20-alpine, eclipse-temurin:17-jdk-jammy)
 #   ${APP_PORT}     → port the app listens on inside the container
 #   ${HOST_PORT}    → port on the host (loopback) where nginx will reach it
 #                     (auto-assigned by add-project.sh from a free range)

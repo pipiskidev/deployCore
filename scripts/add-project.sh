@@ -23,7 +23,7 @@
 #
 # Fully-scripted backend-only example:
 #   ./scripts/add-project.sh worker --no-domain \
-#       --image openjdk:17-jdk-slim --app-port 8080
+#       --image eclipse-temurin:17-jdk-jammy --app-port 8080
 #
 # Steps (full mode, with domain):
 #   1. Validate name and domain.

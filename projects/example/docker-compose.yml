@@ -16,7 +16,9 @@
 
 services:
   example-backend:
-    image: openjdk:17-jdk-slim
+    # Eclipse Temurin is the official successor to the deprecated `openjdk`
+    # Docker Hub image (`openjdk:17-jdk-slim` was retired in 2022).
+    image: eclipse-temurin:17-jdk-jammy
     container_name: example-backend
     restart: unless-stopped
     env_file: ./.env

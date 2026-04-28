@@ -7,7 +7,7 @@ selectively. Drop in your own backend/frontend code via the host paths below.
 
 | Container | Image | Host port | Profile(s) | Purpose |
 |-----------|-------|-----------|------------|---------|
-| `example-backend` | `openjdk:17-jdk-slim` | `127.0.0.1:8066` → :8080 | `full`, `backend` | Spring Boot API |
+| `example-backend` | `eclipse-temurin:17-jdk-jammy` | `127.0.0.1:8066` → :8080 | `full`, `backend` | Spring Boot API |
 | `example-web` | `node:20-alpine` | `127.0.0.1:3005` → :3000 | `full`, `web` | Next.js frontend |
 | `example-mongo` | `mongo:7` | none (internal only) | `full`, `backend`, `mongo` | Database |
 

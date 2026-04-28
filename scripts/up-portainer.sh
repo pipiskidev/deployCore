@@ -4,9 +4,13 @@
 # - Validates PORTAINER_DOMAIN in .env (asks if missing)
 # - Issues a Let's Encrypt cert (skipped if cert already exists)
 # - Renders /etc/nginx/conf.d/portainer.conf from the template (skipped if
-#   already in place with the same domain)
+#   already in place with the same domain — use --force to re-render)
 # - Starts the Portainer container (skipped if already running)
 # - Reloads nginx (skipped if no config changed)
+#
+# Flags:
+#   --force    Re-render /etc/nginx/conf.d/portainer.conf even if it already
+#              exists and looks valid. Use after a template update.
 #
 # Idempotent: rerunning on a fully-deployed Portainer is a no-op.
 
@@ -14,6 +18,15 @@ set -euo pipefail
 
 # shellcheck source=lib/common.sh
 source "$(dirname "$(readlink -f "$0")")/lib/common.sh"
+
+force=0
+for arg in "$@"; do
+  case "$arg" in
+    --force) force=1 ;;
+    --help|-h) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) die "unknown flag: $arg" ;;
+  esac
+done
 
 require_docker
 require_root_or_sudo
@@ -48,9 +61,10 @@ else
   "$REPO_ROOT/scripts/issue-cert.sh" "$domain"
 fi
 
-# Step 2: nginx conf rendering. Skip if file exists and references our domain.
-if sudo test -f "$target" && sudo grep -q "server_name ${domain};" "$target"; then
-  ok "$target already configured for $domain — skipping render"
+# Step 2: nginx conf rendering. Skip if file exists and references our domain
+# AND --force was NOT passed.
+if [[ "$force" -eq 0 ]] && sudo test -f "$target" && sudo grep -q "server_name ${domain};" "$target"; then
+  ok "$target already configured for $domain — skipping render (use --force to re-render)"
 else
   log "rendering $target"
   sudo bash -c "sed 's|\${PORTAINER_DOMAIN}|$domain|g' '$template' > '$target'"

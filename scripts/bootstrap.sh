@@ -164,14 +164,19 @@ log "syncing repo nginx/ → /etc/nginx/"
 # Step 4b: enable nginx so it survives reboots.
 sudo systemctl enable --now nginx
 
-# Step 5: certbot auto-renewal via systemd timer (installed by certbot package).
+# Step 5: certbot auto-renewal. On RHEL family this is `certbot.timer`. On
+# Debian/Ubuntu the certbot package installs /etc/cron.d/certbot instead
+# (which runs `certbot -q renew` twice a day). Either is fine; warn only if
+# neither is present.
 if systemctl list-unit-files 2>/dev/null | grep -q '^certbot\.timer'; then
   log "enabling certbot.timer (twice-daily renewal check)"
   sudo systemctl enable --now certbot.timer
   ok "certbot.timer is active"
+elif [[ -f /etc/cron.d/certbot ]]; then
+  ok "certbot renewals handled via /etc/cron.d/certbot (Debian/Ubuntu default)"
 else
-  warn "certbot.timer not found — your certbot package may not include it."
-  warn "Renewals would need a manual cron entry: 0 3 * * * certbot renew --quiet"
+  warn "neither certbot.timer nor /etc/cron.d/certbot found — auto-renewal NOT scheduled"
+  warn "  add a manual cron entry:  0 3 * * * /usr/bin/certbot renew --quiet"
 fi
 
 # Step 6: Portainer.

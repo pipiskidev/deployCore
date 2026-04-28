@@ -46,17 +46,27 @@ server {
         limit_req  zone=general burst=20 nodelay;
         limit_conn conn_per_ip 30;
 
-        include /etc/nginx/snippets/proxy-common.conf;
+        # Portainer needs WebSocket upgrade (terminal/exec) and long-running
+        # response streams (image pulls, container logs). The defaults in
+        # snippets/proxy-common.conf use 30s timeouts and Connection "" — both
+        # wrong for Portainer. We write all proxy_* directives explicitly here
+        # rather than `include` + override, because nginx errors on duplicate
+        # proxy_read_timeout / proxy_send_timeout at the same level.
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host  $host;
+        proxy_set_header Upgrade           $http_upgrade;
+        proxy_set_header Connection        $connection_upgrade;
 
-        # WebSocket upgrade — Portainer's container terminal needs this.
-        proxy_set_header Upgrade    $http_upgrade;
-        proxy_set_header Connection $connection_upgrade;
+        proxy_http_version 1.1;
 
-        # Long-running streams: image pulls, container logs, exec sessions.
         proxy_buffering         off;
         proxy_request_buffering off;
-        proxy_read_timeout      3600s;
+        proxy_connect_timeout   10s;
         proxy_send_timeout      3600s;
+        proxy_read_timeout      3600s;
 
         # Portainer container binds to 127.0.0.1:9000 on the host.
         proxy_pass http://127.0.0.1:9000;

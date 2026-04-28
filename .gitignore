@@ -31,3 +31,4 @@ core/certbot/webroot/.well-known/
 # If you want to commit a redacted spec, do so under a different path.
 docs/
 .superpowers/
+.commit-msg.tmp

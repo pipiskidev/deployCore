@@ -1,0 +1,89 @@
+# example — example multi-service project (Spring Boot backend + Next.js
+# frontend + MongoDB). Three independent services, each with its own
+# compose profile so you can install them selectively.
+#
+#   docker compose --profile full     up -d   # everything (default)
+#   docker compose --profile backend  up -d   # backend + mongo (no frontend)
+#   docker compose --profile web      up -d   # only frontend (e.g. backend on another host)
+#   docker compose --profile mongo    up -d   # only the database
+#
+# For a "backend-only without public domain" deployment:
+#   1. Skip the example domain replacement in nginx.conf
+#   2. Don't symlink nginx.conf into /etc/nginx/conf.d/
+#   3. docker compose --profile backend up -d
+#   The backend stays reachable on 127.0.0.1:8066 for internal callers
+#   (other containers, CLI scripts, SSH tunnels) without nginx routing.
+
+services:
+  example-backend:
+    image: openjdk:17-jdk-slim
+    container_name: example-backend
+    restart: unless-stopped
+    env_file: ./.env
+    environment:
+      - TZ=${TZ:-Europe/Moscow}
+      - MONGO_HOST=example-mongo
+      - MONGO_PORT=27017
+      - MONGO_USER=${MONGO_USER}
+      - MONGO_PASSWORD=${MONGO_PASSWORD}
+    ports:
+      - "127.0.0.1:8066:8080"
+    volumes:
+      - ${BACKEND_JAR_DIR:-/home/exampleProject/backend/target}:/app:ro
+      - ${STATIC_DIR:-/home/static}:/home/static
+    working_dir: /app
+    command: java -Djava.awt.headless=true -jar /app/Backend-1.0-SNAPSHOT.jar
+    profiles:
+      - full
+      - backend
+    networks:
+      - example-internal
+    depends_on:
+      - example-mongo
+
+  example-web:
+    image: node:20-alpine
+    container_name: example-web
+    restart: unless-stopped
+    env_file: ./.env
+    environment:
+      - TZ=${TZ:-Europe/Moscow}
+      - NODE_ENV=production
+    ports:
+      - "127.0.0.1:3005:3000"
+    volumes:
+      - ${FRONTEND_DIR:-/home/exampleProject/frontend/sources}:/app
+    working_dir: /app
+    command: >
+      sh -c "
+        if [ ! -d node_modules ]; then npm ci --no-audit --silent; fi
+        && npm run build
+        && npm run start
+      "
+    profiles:
+      - full
+      - web
+
+  example-mongo:
+    image: mongo:7
+    container_name: example-mongo
+    restart: unless-stopped
+    env_file: ./.env
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
+      TZ: ${TZ:-Europe/Moscow}
+    volumes:
+      - example-mongo-data:/data/db
+    profiles:
+      - full
+      - backend
+      - mongo
+    networks:
+      - example-internal
+
+volumes:
+  example-mongo-data:
+
+networks:
+  example-internal:

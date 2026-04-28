@@ -28,7 +28,7 @@ defaults applied to every new project.
   Put them on `<name>-internal` only (don't bind ports — they're reached by
   service name from `<name>-app` over the internal network).
 - **Multi-location nginx** — split `/api` (rate-limit `api`) from `/`
-  (rate-limit `general`); see `projects/max/nginx.conf` for an example.
+  (rate-limit `general`); see `projects/example/nginx.conf` for an example.
 - **Volumes** — declare named volumes at the bottom of compose for state.
 - **WebSockets** — in `nginx.conf`, add inside the relevant location:
   ```

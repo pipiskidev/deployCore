@@ -10,7 +10,7 @@
 #   2. Spin up a temporary web UI on port 8888 via `docker run node:20-alpine`.
 #   3. Operator opens http://<server-ip>:8888 in their browser, fills out a
 #      form (email, timezone, what to install, domains, tokens), clicks Save.
-#   4. UI writes .env, projects/max/.env, shared/mail/mailserver.env (only the
+#   4. UI writes .env, projects/example/.env, shared/mail/mailserver.env (only the
 #      ones selected) + .install-ui-result.json sidecar, then exits.
 #   5. Bootstrap reads the sidecar to know which optional services to bring up
 #      and continues with apt install of nginx + certbot, sync, enable timer,

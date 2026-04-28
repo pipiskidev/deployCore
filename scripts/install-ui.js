@@ -8,7 +8,7 @@
  * what to install and fill in domains, emails, and tokens. On submit, writes:
  *
  *     <repo>/.env
- *     <repo>/projects/max/.env          (only if "Configure max" checked)
+ *     <repo>/projects/example/.env      (only if "Configure example" checked)
  *     <repo>/shared/mail/mailserver.env (only if "Install mail" checked)
  *     <repo>/.install-ui-result.json    (sidecar: which optionals were picked)
  *
@@ -155,24 +155,41 @@ const HTML_FORM = `<!doctype html>
 
       <div class="card">
         <label class="row" style="margin:0">
-          <input type="checkbox" name="install_max" id="install_max" value="1" {{MAX_CHECKED}}>
-          <strong>Configure the <code>max</code> project</strong> (Spring Boot + Next.js + MongoDB)
+          <input type="checkbox" name="install_example" id="install_example" value="1" {{EXAMPLE_CHECKED}}>
+          <strong>Configure the <code>example</code> project</strong> (Spring Boot + Next.js + MongoDB)
         </label>
-        <div class="group-body {{MAX_OPEN}}" id="max_body">
-          <label for="MAX_DOMAIN">max domain</label>
-          <input type="text" id="MAX_DOMAIN" name="MAX_DOMAIN" placeholder="max.example.com" value="{{MAX_DOMAIN}}">
+        <p class="muted" style="margin:6px 0 0 24px">
+          Pick which services to set up. Tick none to skip the project entirely. Domain is required only if you tick frontend or backend (i.e. anything fronted by nginx).
+        </p>
+        <div class="group-body {{EXAMPLE_OPEN}}" id="example_body">
+          <label class="row" style="margin-top:0">
+            <input type="checkbox" name="example_backend" value="1" {{EX_B_CHECKED}}>
+            Backend (Spring Boot, public via nginx)
+          </label>
+          <label class="row">
+            <input type="checkbox" name="example_web" value="1" {{EX_W_CHECKED}}>
+            Frontend (Next.js, public via nginx)
+          </label>
+          <label class="row">
+            <input type="checkbox" name="example_mongo" value="1" {{EX_M_CHECKED}}>
+            Database (MongoDB, internal only)
+          </label>
 
-          <label for="MONGO_PASSWORD">MongoDB root password</label>
+          <label for="EXAMPLE_DOMAIN" style="margin-top:16px">example domain <span class="muted">(only if backend OR frontend selected)</span></label>
+          <input type="text" id="EXAMPLE_DOMAIN" name="EXAMPLE_DOMAIN" placeholder="example.example.com" value="{{EXAMPLE_DOMAIN}}">
+          <div class="help">Leave empty for a backend-only deployment without a public domain — the backend stays reachable on 127.0.0.1:8066 internally.</div>
+
+          <label for="MONGO_PASSWORD">MongoDB root password <span class="muted">(only if backend OR database selected)</span></label>
           <div class="gen-row">
             <input type="text" id="MONGO_PASSWORD" name="MONGO_PASSWORD" value="{{MONGO_PASSWORD}}" placeholder="generate or paste">
             <button type="button" class="secondary" onclick="genPwd()">Generate</button>
           </div>
           <div class="help">A 32-byte URL-safe random secret is generated client-side when you click Generate.</div>
 
-          <label for="BACKEND_JAR_DIR">Backend jar directory (host path)</label>
+          <label for="BACKEND_JAR_DIR">Backend jar directory (host path) <span class="muted">— if backend</span></label>
           <input type="text" id="BACKEND_JAR_DIR" name="BACKEND_JAR_DIR" value="{{BACKEND_JAR_DIR}}">
 
-          <label for="FRONTEND_DIR">Frontend sources directory (host path)</label>
+          <label for="FRONTEND_DIR">Frontend sources directory (host path) <span class="muted">— if frontend</span></label>
           <input type="text" id="FRONTEND_DIR" name="FRONTEND_DIR" value="{{FRONTEND_DIR}}">
 
           <label for="STATIC_DIR">Static files directory (host path)</label>
@@ -202,7 +219,7 @@ const HTML_FORM = `<!doctype html>
   }
   toggle('install_portainer', 'portainer_body');
   toggle('install_mail', 'mail_body');
-  toggle('install_max', 'max_body');
+  toggle('install_example', 'example_body');
 
   function genPwd() {
     const buf = new Uint8Array(32);
@@ -259,11 +276,17 @@ function loadDefaults(repoRoot) {
     MAIL_HOSTNAME: 'smtp',
     LETSENCRYPT_DOMAIN: '',
     POSTMASTER_ADDRESS: '',
-    MAX_DOMAIN: '',
+    EXAMPLE_DOMAIN: '',
     MONGO_PASSWORD: '',
-    BACKEND_JAR_DIR: '/home/maxAgent/backend/target',
-    FRONTEND_DIR:    '/home/maxAgent/frontend/sources',
+    BACKEND_JAR_DIR: '/home/exampleProject/backend/target',
+    FRONTEND_DIR:    '/home/exampleProject/frontend/sources',
     STATIC_DIR:      '/home/static',
+    // Service-level toggles for the example project. Default backend on, web
+    // off so that backend-only is the easy path; user opts in to the rest.
+    install_example:  '0',
+    example_backend:  '1',
+    example_web:      '0',
+    example_mongo:    '1',
   };
   const envPath = path.join(repoRoot, '.env');
   if (fs.existsSync(envPath)) {
@@ -303,9 +326,12 @@ function renderForm(state, error = '', form = {}) {
     MAIL_HOSTNAME:       v('MAIL_HOSTNAME'),
     LETSENCRYPT_DOMAIN:  v('LETSENCRYPT_DOMAIN'),
     POSTMASTER_ADDRESS:  v('POSTMASTER_ADDRESS'),
-    MAX_CHECKED:         checked('install_max'),
-    MAX_OPEN:            open_('install_max'),
-    MAX_DOMAIN:          v('MAX_DOMAIN'),
+    EXAMPLE_CHECKED:     checked('install_example'),
+    EXAMPLE_OPEN:        open_('install_example'),
+    EX_B_CHECKED:        checked('example_backend'),
+    EX_W_CHECKED:        checked('example_web'),
+    EX_M_CHECKED:        checked('example_mongo'),
+    EXAMPLE_DOMAIN:      v('EXAMPLE_DOMAIN'),
     MONGO_PASSWORD:      v('MONGO_PASSWORD'),
     BACKEND_JAR_DIR:     v('BACKEND_JAR_DIR'),
     FRONTEND_DIR:        v('FRONTEND_DIR'),
@@ -336,7 +362,12 @@ function validateAndWrite(state, form) {
 
   const installPortainer = form.install_portainer === '1';
   const installMail      = form.install_mail      === '1';
-  const installMax       = form.install_max       === '1';
+  const installExample   = form.install_example   === '1';
+  // Service-level toggles for the example project — only meaningful when
+  // installExample is true.
+  const exBackend = installExample && form.example_backend === '1';
+  const exWeb     = installExample && form.example_web     === '1';
+  const exMongo   = installExample && form.example_mongo   === '1';
 
   if (installPortainer) {
     const d = trim('PORTAINER_DOMAIN');
@@ -347,9 +378,19 @@ function validateAndWrite(state, form) {
       if (!trim(k)) errors.push(`${k} required when mail is enabled`);
     }
   }
-  if (installMax) {
-    if (!trim('MAX_DOMAIN'))     errors.push('MAX_DOMAIN required when max project is enabled');
-    if (!trim('MONGO_PASSWORD')) errors.push('MONGO_PASSWORD required (use Generate button)');
+  if (installExample) {
+    // At least one service must be ticked (otherwise tick "Configure example" off entirely).
+    if (!exBackend && !exWeb && !exMongo) {
+      errors.push('Select at least one of backend/frontend/database — or untick "Configure the example project".');
+    }
+    // Domain only required if anything will be fronted by nginx.
+    if ((exBackend || exWeb) && !trim('EXAMPLE_DOMAIN')) {
+      errors.push('EXAMPLE_DOMAIN required when backend OR frontend is selected (because nginx fronts both). Untick those for backend-only / no-domain.');
+    }
+    // Mongo password only required if backend or mongo present.
+    if ((exBackend || exMongo) && !trim('MONGO_PASSWORD')) {
+      errors.push('MONGO_PASSWORD required when backend or database is selected (use Generate button).');
+    }
   }
 
   if (errors.length) throw new Error(errors.join('\n'));
@@ -367,18 +408,18 @@ function validateAndWrite(state, form) {
   writeFileSecure(path.join(state.repoRoot, '.env'), envBody);
   const summary = ['.env'];
 
-  if (installMax) {
-    const maxEnv = [
-      `MAX_DOMAIN=${trim('MAX_DOMAIN')}`,
+  if (installExample) {
+    const exampleEnv = [
+      `EXAMPLE_DOMAIN=${trim('EXAMPLE_DOMAIN')}`,
       'MONGO_USER=root',
       `MONGO_PASSWORD=${trim('MONGO_PASSWORD')}`,
-      `BACKEND_JAR_DIR=${trim('BACKEND_JAR_DIR') || '/home/maxAgent/backend/target'}`,
-      `FRONTEND_DIR=${trim('FRONTEND_DIR') || '/home/maxAgent/frontend/sources'}`,
+      `BACKEND_JAR_DIR=${trim('BACKEND_JAR_DIR') || '/home/exampleProject/backend/target'}`,
+      `FRONTEND_DIR=${trim('FRONTEND_DIR') || '/home/exampleProject/frontend/sources'}`,
       `STATIC_DIR=${trim('STATIC_DIR') || '/home/static'}`,
       `TZ=${tz}`,
     ].join('\n') + '\n';
-    writeFileSecure(path.join(state.repoRoot, 'projects', 'max', '.env'), maxEnv);
-    summary.push('projects/max/.env');
+    writeFileSecure(path.join(state.repoRoot, 'projects', 'example', '.env'), exampleEnv);
+    summary.push('projects/example/.env');
   }
 
   if (installMail) {
@@ -403,7 +444,10 @@ function validateAndWrite(state, form) {
   const sidecar = JSON.stringify({
     install_portainer: installPortainer,
     install_mail:      installMail,
-    install_max:       installMax,
+    install_example:   installExample,
+    example_backend:   exBackend,
+    example_web:       exWeb,
+    example_mongo:     exMongo,
   }) + '\n';
   writeFileSecure(path.join(state.repoRoot, '.install-ui-result.json'), sidecar);
   summary.push('.install-ui-result.json');

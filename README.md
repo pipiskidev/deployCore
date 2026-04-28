@@ -31,7 +31,7 @@ cd deployCore
 That's it. After Docker is installed, bootstrap launches a temporary web UI
 on port **8888**. Open `http://<your-server-ip>:8888` in a browser, fill out
 the form (Let's Encrypt email, what to install — Portainer? mail? configure
-the `max` project? — domains, tokens), click **Save and continue**. The UI
+the `example` project — backend? frontend? db? — domains, tokens), click **Save and continue**. The UI
 writes the right `.env` files, exits, and bootstrap continues with apt
 installs, syncing `/etc/nginx/`, and bringing up whichever optional services
 you ticked.
@@ -76,7 +76,7 @@ deployCore/
 │   └── docker-compose.yml              # container bound to 127.0.0.1:9000
 ├── projects/                           # apps
 │   ├── _template/                      # copy source for add-project.sh
-│   └── max/                            # first project (Spring Boot + Next.js + Mongo)
+│   └── example/                        # example project (Spring Boot + Next.js + Mongo)
 ├── shared/
 │   └── mail/                           # opt-in SMTP (docker-mailserver)
 └── scripts/
@@ -104,7 +104,7 @@ deployCore/
 | **a project** | off | `./scripts/add-project.sh <name> <domain>` | docker, `127.0.0.1:<auto-port>` |
 
 For a project, you can pick which subset of its services runs via compose
-profiles. `_template` and `max` ship with these:
+profiles. `_template` and `example` ship with these:
 
 | Profile | What runs |
 |---------|-----------|
@@ -173,4 +173,4 @@ volumes, or TLS certificates — those require explicit operator action.
   block it by default. DNS records (MX, SPF, DKIM, DMARC, PTR) are NOT
   configured by this stack — set them up at your DNS provider.
 - **Logs**: `sudo journalctl -u nginx -f` for nginx, `docker compose -f
-  projects/max/docker-compose.yml logs -f` for a project.
+  projects/example/docker-compose.yml logs -f` for a project.

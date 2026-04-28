@@ -86,9 +86,14 @@ require_docker
 # Step 2: install UI (browser form). Skipped with --no-ui, --yes, OR if .env
 # already exists with a non-default LETSENCRYPT_EMAIL (re-run scenario).
 # Override the auto-skip with --force-ui if you want to re-edit values.
+#
+# The sidecar (.install-ui-result.json) PERSISTS across runs so we remember
+# which optional services the operator selected previously, even when the UI
+# is auto-skipped. This is critical for resuming after a partial failure
+# (e.g., bootstrap died on portainer reload — on the next run we still know
+# example-backend was supposed to come up).
 ui_port="${INSTALL_UI_PORT:-8888}"
 sidecar="$REPO_ROOT/.install-ui-result.json"
-rm -f "$sidecar"
 
 # Auto-skip on re-runs: if .env exists and has a real LETSENCRYPT_EMAIL, the
 # operator already configured this server. Don't open UI again unless asked.
@@ -102,6 +107,9 @@ if [[ "$no_ui" -eq 0 && "$force_ui" -eq 0 && -f "$REPO_ROOT/.env" ]]; then
 fi
 
 if [[ "$no_ui" -eq 0 && "$no_prompt" -eq 0 ]]; then
+  # Only delete the old sidecar if we're actually about to write a new one.
+  rm -f "$sidecar"
+
   log "starting install UI on port $ui_port (Ctrl-C to cancel)"
   log "open in your browser: http://$(hostname -I 2>/dev/null | awk '{print $1}' || echo '<server-ip>'):$ui_port"
 
@@ -124,19 +132,43 @@ if [[ "$no_ui" -eq 0 && "$no_prompt" -eq 0 ]]; then
     130) die "bootstrap cancelled by operator (UI)" ;;
     *)   die "install UI exited unexpectedly (rc=$ui_rc)" ;;
   esac
+fi
 
-  # The UI may have flagged optional components in the sidecar.
-  if [[ -f "$sidecar" ]]; then
-    if grep -q '"install_portainer":true' "$sidecar"; then with_portainer=1; fi
-    if grep -q '"install_mail":true'      "$sidecar"; then with_mail=1; fi
-    if grep -q '"install_backend":true'   "$sidecar"; then ex_backend=1;  else ex_backend=0;  fi
-    if grep -q '"install_frontend":true'  "$sidecar"; then ex_frontend=1; else ex_frontend=0; fi
-    if grep -q '"install_mongo":true'     "$sidecar"; then ex_mongo=1;    else ex_mongo=0;    fi
-  fi
+# Always read the sidecar (whether the UI ran this time or not).
+if [[ -f "$sidecar" ]]; then
+  grep -q '"install_portainer":true' "$sidecar" && with_portainer=1 || true
+  grep -q '"install_mail":true'      "$sidecar" && with_mail=1      || true
+  grep -q '"install_backend":true'   "$sidecar" && ex_backend=1     || true
+  grep -q '"install_frontend":true'  "$sidecar" && ex_frontend=1    || true
+  grep -q '"install_mongo":true'     "$sidecar" && ex_mongo=1       || true
+elif [[ -f "$REPO_ROOT/projects/example/.env" ]]; then
+  # Recovery case: example/.env exists but sidecar is gone (e.g., the previous
+  # bootstrap deleted it before crashing on a different step). Infer that the
+  # operator wanted SOMETHING from example and bring up whatever isn't already
+  # running.
+  warn "projects/example/.env exists but sidecar is missing"
+  warn "  bringing up all example services that aren't already running"
+  warn "  (run ./scripts/bootstrap.sh --force-ui to redo the selection cleanly)"
+  ex_backend=1
+  ex_frontend=1
+  ex_mongo=1
 fi
 ex_backend="${ex_backend:-0}"
 ex_frontend="${ex_frontend:-0}"
 ex_mongo="${ex_mongo:-0}"
+
+# Print the resolved selection so the operator sees what bootstrap will do.
+selected=()
+[[ "$with_portainer" -eq 1 ]] && selected+=("portainer")
+[[ "$with_mail"      -eq 1 ]] && selected+=("mail")
+[[ "$ex_backend"     -eq 1 ]] && selected+=("example-backend")
+[[ "$ex_frontend"    -eq 1 ]] && selected+=("example-frontend")
+[[ "$ex_mongo"       -eq 1 ]] && selected+=("example-mongo")
+if [[ "${#selected[@]}" -gt 0 ]]; then
+  log "selected optional services: ${selected[*]}"
+else
+  log "no optional services selected — only nginx + certbot will be set up"
+fi
 
 # Step 3: host nginx + certbot.
 require_root_or_sudo

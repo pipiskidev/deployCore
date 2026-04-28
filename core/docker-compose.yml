@@ -1,0 +1,54 @@
+services:
+  nginx:
+    build: ./nginx
+    container_name: core-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/snippets:/etc/nginx/snippets:ro
+      - letsencrypt:/etc/letsencrypt:ro
+      - ./certbot/webroot:/var/www/certbot:ro
+    networks:
+      - web
+
+  certbot:
+    image: certbot/certbot:latest
+    container_name: core-certbot
+    restart: unless-stopped
+    entrypoint: >
+      /bin/sh -c "trap exit TERM;
+      while :; do
+        certbot renew --webroot -w /var/www/certbot --quiet
+          --deploy-hook 'touch /var/www/certbot/.reload';
+        sleep 12h & wait $${!};
+      done;"
+    volumes:
+      - letsencrypt:/etc/letsencrypt
+      - ./certbot/webroot:/var/www/certbot
+
+  # Optional. Brought up only with --profile portainer
+  # (or via bootstrap.sh --with-portainer).
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: core-portainer
+    restart: unless-stopped
+    profiles:
+      - portainer
+    ports:
+      - "127.0.0.1:9000:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - portainer_data:/data
+    environment:
+      - TZ=${TZ:-Europe/Moscow}
+
+volumes:
+  letsencrypt:
+  portainer_data:
+
+networks:
+  web:
+    external: true

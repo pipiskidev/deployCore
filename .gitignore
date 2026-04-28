@@ -1,0 +1,29 @@
+# Secrets — never commit
+.env
+**/.env
+shared/mail/mailserver.env
+
+# Runtime data and logs
+data/
+**/data/
+*.log
+
+# Editor / OS detritus
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Built artifacts and dependencies
+node_modules/
+target/
+*.jar
+
+# Local certbot scratch
+core/certbot/webroot/.well-known/
+
+# Project design docs and brainstorm notes — local only.
+# These may contain context-specific secrets, internal decisions, or PII.
+# If you want to commit a redacted spec, do so under a different path.
+docs/
+.superpowers/

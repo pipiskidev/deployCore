@@ -1,0 +1,29 @@
+# Project template. Substituted by add-project.sh:
+#   ${PROJECT_NAME} → project slug, used as container name prefix
+#   ${IMAGE}        → docker image (e.g. node:20-alpine, openjdk:17-jdk-slim)
+#   ${APP_PORT}     → container internal port nginx will proxy to
+#
+# Profiles let you bring services up selectively:
+#   docker compose up -d                          → only services without a profile
+#   docker compose --profile full up -d           → everything
+#   docker compose --profile app up -d            → just the app container
+
+services:
+  ${PROJECT_NAME}-app:
+    image: ${IMAGE}
+    container_name: ${PROJECT_NAME}-app
+    restart: unless-stopped
+    env_file: ./.env
+    expose:
+      - "${APP_PORT}"
+    profiles:
+      - full
+      - app
+    networks:
+      - web
+      - ${PROJECT_NAME}-internal
+
+networks:
+  web:
+    external: true
+  ${PROJECT_NAME}-internal:

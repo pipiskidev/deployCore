@@ -1,0 +1,2 @@
+# Placeholder so the empty conf.d directory is preserved in git.
+# Project nginx configs are symlinked here at runtime by add-project.sh.
